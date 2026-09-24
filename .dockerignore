@@ -1,0 +1,34 @@
+# Binaries
+/findJobs
+/bin
+
+# Dependencies
+/vendor
+
+# IDE and editor files
+/.vscode
+/.idea
+*.swp
+*.swo
+
+# Git
+/.git
+/.gitignore
+
+# Documentation
+/README.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (to avoid recursive context)
+/docker-compose.yml
+/Dockerfile
+/.dockerignore
+
+# Test files
+/*_test.go
+# Test directories
+/internal/**/*_test.go
+/pkg/**/*_test.go

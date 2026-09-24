@@ -9,21 +9,40 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog"
+	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
+	"findJobs/internal/pkg/postgres"
+	"findJobs/internal/pkg/redis"
 )
 
 func main() {
-	log := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	log := logger.Get()
+
+	// Load application configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load configuration")
+	}
 
 	// Initialize PostgreSQL connection pool
+	if _, err := postgres.New(cfg); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize PostgreSQL connection pool")
+	}
+	defer postgres.Close()
 
 	// Initialize Redis client
+	if _, err := redis.New(cfg); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize Redis client")
+	}
+	defer redis.Close()
+
+	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
 	// Start server
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":8080"),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		Addr:         fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -42,7 +61,7 @@ func main() {
 
 	log.Info().Msg("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
