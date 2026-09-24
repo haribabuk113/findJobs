@@ -38,9 +38,17 @@ func main() {
 
 	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
+	/* USERS */
+	profileRepo := profiles.NewProfileRepo(db)
+	profileService := profiles.NewProfileService(profileRepo)
+	profileController := profiles.NewProfileController(profileService)
+
+	routes, err := router.InitRoutes(profileController)
+
 	// Start server
 	server := &http.Server{
 		Addr:         fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
+		Handler:      routes,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
