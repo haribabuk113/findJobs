@@ -11,7 +11,7 @@ func RegisterRoutes(rg *gin.RouterGroup, ctrl *ProfileController) {
 	// Protected Routes
 	// rg.Use(security.TokenValidator)ß
 
-	// rg.GET("/", ctrl.GetProfile)
-	// rg.PATCH("/update", ctrl.UpdateProfile)
+	rg.GET("/", ctrl.GetProfile)
+	rg.PATCH("/update", ctrl.UpdateProfile)
 
 }

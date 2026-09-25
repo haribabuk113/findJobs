@@ -2,17 +2,18 @@ package main
 
 import (
 	"context"
+	"findJobs/internal/application/profiles"
+	"findJobs/internal/application/routers"
+	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
+	"findJobs/internal/pkg/postgres"
+	"findJobs/internal/pkg/redis"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"findJobs/internal/pkg/config"
-	"findJobs/internal/pkg/logger"
-	"findJobs/internal/pkg/postgres"
-	"findJobs/internal/pkg/redis"
 )
 
 func main() {
@@ -25,7 +26,8 @@ func main() {
 	}
 
 	// Initialize PostgreSQL connection pool
-	if _, err := postgres.New(cfg); err != nil {
+	db, err := postgres.New(cfg)
+	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize PostgreSQL connection pool")
 	}
 	defer postgres.Close()
@@ -43,7 +45,7 @@ func main() {
 	profileService := profiles.NewProfileService(profileRepo)
 	profileController := profiles.NewProfileController(profileService)
 
-	routes, err := router.InitRoutes(profileController)
+	routes, err := routers.InitRoutes(profileController)
 
 	// Start server
 	server := &http.Server{
