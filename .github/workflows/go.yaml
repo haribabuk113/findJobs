@@ -1,0 +1,32 @@
+name: Go Build and Test
+
+# Trigger the workflow on pushes or pull requests to the main branch
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Compile Go Code
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out the repository's source code
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Go compiler environment (with automatic caching)
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22" # Replace with your preferred Go version
+
+      # Step 3: Verify and download module dependencies
+      - name: Verify dependencies
+        run: go mod verify
+
+      # Step 4: Compile the application code
+      - name: Build binary
+        run: go build -v ./...

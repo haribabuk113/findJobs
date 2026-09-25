@@ -1,0 +1,54 @@
+name: Go Unit Tests
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Display coverage
+        run: go tool cover -func=coverage.out
+
+      # - name: Check coverage
+      #   run: |
+      #     COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
+      #     echo "Coverage: ${COVERAGE}%"
+
+      #     if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+      #       echo "Coverage is below 80%"
+      #       exit 1
+      #     fi
+
+      - name: Generate HTML coverage report
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-report
+          path: coverage.html
