@@ -2,18 +2,21 @@ package main
 
 import (
 	"context"
-	"findJobs/internal/application/profiles"
-	"findJobs/internal/application/routers"
-	"findJobs/internal/pkg/config"
-	"findJobs/internal/pkg/logger"
-	"findJobs/internal/pkg/postgres"
-	"findJobs/internal/pkg/redis"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"findJobs/internal/adapters/inbound"
+	"findJobs/internal/adapters/outbound/postgres"
+	"findJobs/internal/application/profiles"
+	"findJobs/internal/application/routers"
+	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
+	postgrefacade "findJobs/internal/pkg/postgres"
+	"findJobs/internal/pkg/redis"
 )
 
 func main() {
@@ -26,11 +29,11 @@ func main() {
 	}
 
 	// Initialize PostgreSQL connection pool
-	db, err := postgres.New(cfg)
+	db, err := postgrefacade.New(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize PostgreSQL connection pool")
 	}
-	defer postgres.Close()
+	defer postgrefacade.Close()
 
 	// Initialize Redis client
 	if _, err := redis.New(cfg); err != nil {
@@ -41,11 +44,14 @@ func main() {
 	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
 	/* USERS */
-	profileRepo := profiles.NewProfileRepo(db)
+	profileRepo := postgres.NewProfileRepository(db)
 	profileService := profiles.NewProfileService(profileRepo)
-	profileController := profiles.NewProfileController(profileService)
+	profileHandler := inbound.NewHandler(profileService)
 
-	routes, err := routers.InitRoutes(profileController)
+	routes, err := routers.InitRoutes(profileHandler)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize routes")
+	}
 
 	// Start server
 	server := &http.Server{
