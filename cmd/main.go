@@ -48,7 +48,7 @@ func main() {
 	profileService := profiles.NewProfileService(profileRepo)
 	profileHandler := inbound.NewHandler(profileService)
 
-	routes, err := routers.InitRoutes(profileHandler)
+		routes, err := routers.InitRoutes(profileHandler, db)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize routes")
 	}

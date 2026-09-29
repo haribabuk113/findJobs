@@ -1,9 +1,9 @@
 package config
 
 import (
+	"os"
+	"strconv"
 	"time"
-
-	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -75,23 +75,7 @@ type RateLimitConfig struct {
 }
 
 func Load() (*Config, error) {
-	v := viper.New()
-	v.SetDefault("server.port", "8080")
-	v.SetDefault("server.read_timeout", "15s")
-	v.SetDefault("server.write_timeout", "15s")
-	v.SetDefault("server.shutdown_timeout", "10s")
-	v.SetDefault("database.max_open_conns", 25)
-	v.SetDefault("database.max_idle_conns", 25)
-	v.SetDefault("database.conn_max_lifetime", "5m")
-	v.SetDefault("database.ssl_mode", "disable")
-	v.SetDefault("redis.max_retries", 3)
-	v.SetDefault("redis.pool_size", 10)
-	v.SetDefault("redis.min_idle_conns", 5)
-	v.SetDefault("redis.dial_timeout", "5s")
-	v.SetDefault("rate_limit.requests_per_minute", 100)
-	v.SetDefault("rate_limit.burst", 20)
-	v.SetEnvPrefix("JPORTAL")
-	v.AutomaticEnv()
+	// JPORTAL prefix for all environment variables (mimicking original viper behavior)
 	return &Config{
 		Environment: getEnvOrDefault("ENVIRONMENT", "dev"),
 		Server: ServerConfig{
@@ -104,8 +88,8 @@ func Load() (*Config, error) {
 		Database: DatabaseConfig{
 			Host:            getEnvOrDefault("DB_HOST", "localhost"),
 			Port:            getEnvIntOrDefault("DB_PORT", 5432),
-			Username:        getEnvOrDefault("DB_USERNAME", "postgres"),
-			Password:        getEnvOrDefault("DB_PASSWORD", "postgres"),
+			Username:        getEnvOrDefault("DB_USERNAME", "dbuser"),
+			Password:        getEnvOrDefault("DB_PASSWORD", "dbpass"),
 			DBName:          getEnvOrDefault("DB_NAME", "jportal"),
 			SSLMode:         getEnvOrDefault("DB_SSL_MODE", "disable"),
 			MaxOpenConns:    getEnvIntOrDefault("DB_MAX_OPEN_CONNS", 25),
@@ -148,21 +132,23 @@ func Load() (*Config, error) {
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
-	if value := viper.GetString(key); value != "" {
+	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
 }
 
 func getEnvIntOrDefault(key string, defaultValue int) int {
-	if value := viper.GetInt(key); value != 0 {
-		return value
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
 	}
 	return defaultValue
 }
 
 func getEnvDurationOrDefault(key, defaultValue string) time.Duration {
-	if value := viper.GetString(key); value != "" {
+	if value := os.Getenv(key); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
 		}

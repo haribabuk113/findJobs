@@ -2,19 +2,19 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:15.19
     container_name: jportal-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: dbpass
       POSTGRES_DB: jportal
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U dbuser"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,14 +40,14 @@ services:
     container_name: jportal-app
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8081:8081"
     environment:
       - SERVER_HOST=0.0.0.0
-      - SERVER_PORT=8080
+      - SERVER_PORT=8081
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_USERNAME=postgres
-      - DB_PASSWORD=postgres
+      - DB_USERNAME=dbuser
+      - DB_PASSWORD=dbpass
       - DB_NAME=jportal
       - DB_SSL_MODE=disable
       - REDIS_HOST=redis
