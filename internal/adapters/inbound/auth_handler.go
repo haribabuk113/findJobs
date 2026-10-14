@@ -15,6 +15,9 @@ import (
 // can't read it; SameSite=Lax so cross-site POSTs don't carry it.
 const sessionCookie = "jp_session"
 
+// userIDKey is the gin context key OptionalUser sets for signed-in requests.
+const userIDKey = "user_id"
+
 // AuthHandler handles HTTP requests for auth and delegates to the application service.
 type AuthHandler struct {
 	service      appauth.AuthService
@@ -106,6 +109,19 @@ func (h *AuthHandler) Logout(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, adapters.BuildResponse("Logged out successfully", map[string]string{"message": "Logged out successfully"}, nil))
+}
+
+// OptionalUser sets the findJobs user ID in the context when the request
+// carries a valid session; anonymous requests pass through untouched.
+func (h *AuthHandler) OptionalUser() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		if sessionID, _ := ctx.Cookie(sessionCookie); sessionID != "" {
+			if result, err := h.service.GetCurrentUser(ctx, sessionID); err == nil {
+				ctx.Set(userIDKey, result.User.ID)
+			}
+		}
+		ctx.Next()
+	}
 }
 
 func (h *AuthHandler) setCookie(ctx *gin.Context, value string, maxAge int) {

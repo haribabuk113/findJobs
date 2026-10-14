@@ -24,3 +24,43 @@ Dependencies point inward toward the domain:
 - `cmd/main.go` → adapters → application → ports → domain
 - Adapters depend on ports/interfaces, not on concrete implementations.
 - The domain never imports `internal/application`, `internal/adapters`, or `internal/pkg`.
+
+## API
+
+All responses use `{status, message, error, data}`. Errors never include internal details.
+
+### Auth — `/vol/v1/auth` (session cookie `jp_session`, HttpOnly)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/session` | `{"code"}` from IAM's redirect. Redeems it at IAM, sets the cookie. |
+| GET | `/me` | Current user + session `expires_at`. Refreshes IAM tokens when expired. |
+| GET | `/token` | Current IAM access token, for the frontend server to call IAM admin APIs. |
+| POST | `/logout` | Deletes the session and revokes it at IAM. |
+
+### Jobs — `POST /vol/v1/jobs/search`
+
+One consolidated payload, sent when the user presses Search. AND across categories, OR within a list. All fields optional.
+
+```json
+{
+  "query": "senior engineer",          "location_text": "bengaluru",
+  "designations": [], "skills": ["React"], "location_ids": ["in-blr"], "worldwide_remote": false,
+  "min_salary_inr": 3000000, "max_salary_inr": 0,
+  "notice_periods": ["Immediate"], "relocation": [], "work_modes": ["Remote", "Hybrid"], "work_types": [],
+  "categories": [], "levels": [], "tiers": [], "application_methods": ["Easy apply"],
+  "industries": [], "company_sizes": [], "benefits": [], "job_ids": [],
+  "min_experience": 3, "max_experience": null, "interview_rounds": 3, "interview_rounds_exact": false,
+  "posted_within_days": 30, "sort": "newest", "page": 1, "page_size": 20
+}
+```
+
+- Salary is filtered on the INR baseline; the client converts the user's currency with `rates.json` first.
+- `location_ids` are leaf city ids flattened from the location tree (client expands radius searches too).
+- `sort`: `newest` (default), `salary`, `title`. Match-score sorting runs client-side.
+- `posted_within_days`: 1, 3, 7, 9, 15, 30. Listings older than 30 days, `is_visible = false` or `Free` (unlisted) tier never appear.
+- Hidden-salary jobs still match salary filters but come back with `salary_hidden: true` and null amounts.
+- With a valid `jp_session` cookie, jobs the user applied to are excluded.
+- Response `data`: `{jobs: [...], total, page, page_size}`.
+
+Dev sample data: `docker exec -i jportal-postgres psql -U dbuser -d jportal < migrations/dev_seed/jobs.sql`

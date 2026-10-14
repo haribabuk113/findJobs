@@ -7,6 +7,7 @@ import (
 	"findJobs/internal/adapters/outbound/iam"
 	"findJobs/internal/adapters/outbound/postgres"
 	appauth "findJobs/internal/application/auth"
+	appjobs "findJobs/internal/application/jobs"
 	"findJobs/internal/pkg/config"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,10 @@ func InitRoutes(cfg *config.Config, profileHandler *inbound.Handler, db *pgxpool
 	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev")
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
+
+	// Job routes
+	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db)))
+	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser())
 
 	return router, nil
 }
