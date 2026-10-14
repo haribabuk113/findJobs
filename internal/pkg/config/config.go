@@ -55,11 +55,10 @@ type SearchConfig struct {
 }
 
 type IAMConfig struct {
-	Endpoint     string
-	ClientID     string
-	ClientSecret string
-	TokenURL     string
-	Audience     string
+	Endpoint string // IAM base URL, server-to-server
+	AppID    string // this app's id registered in IAM_ALLOWED_APPS
+	Issuer   string // must match IAM's JWT_ISSUER
+	Audience string // IAM tokens always carry aud "app-registry"
 }
 
 type JWTConfig struct {
@@ -112,11 +111,10 @@ func Load() (*Config, error) {
 			IndexName: "jobs",
 		},
 		IAM: IAMConfig{
-			Endpoint:     getEnvOrDefault("IAM_ENDPOINT", "http://localhost:8081"),
-			ClientID:     getEnvOrDefault("IAM_CLIENT_ID", "jportal"),
-			ClientSecret: getEnvOrDefault("IAM_CLIENT_SECRET", "secret"),
-			TokenURL:     getEnvOrDefault("IAM_TOKEN_URL", "http://localhost:8081/api/v1/token"),
-			Audience:     getEnvOrDefault("IAM_AUDIENCE", "jportal"),
+			Endpoint: getEnvOrDefault("IAM_ENDPOINT", "http://localhost:8080"),
+			AppID:    getEnvOrDefault("IAM_APP_ID", "jportal"),
+			Issuer:   getEnvOrDefault("IAM_ISSUER", "https://auth.company.com"),
+			Audience: getEnvOrDefault("IAM_AUDIENCE", "app-registry"),
 		},
 		JWT: JWTConfig{
 			SecretKey:          getEnvOrDefault("JWT_SECRET", "default-secret-key-change-in-production"),

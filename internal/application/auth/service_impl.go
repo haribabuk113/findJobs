@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"findJobs/internal/domain/auth"
 	"findJobs/internal/ports"
@@ -9,90 +10,123 @@ import (
 
 type service struct {
 	repo ports.AuthRepository
+	iam  ports.IAMClient
 }
 
 // NewAuthService creates a new auth service using dependency injection
-func NewAuthService(repo ports.AuthRepository) AuthService {
-	return &service{repo: repo}
+func NewAuthService(repo ports.AuthRepository, iam ports.IAMClient) AuthService {
+	return &service{repo: repo, iam: iam}
 }
 
-// CreateSession creates or resolves a session from the IAM JWT
-func (s *service) CreateSession(ctx context.Context, request *auth.SessionRequest, iamUserID string) (*auth.SessionResponse, error) {
-	// Validate the request
+// CreateSession redeems the IAM code, verifies the issued token, upserts the
+// user keyed by ecosystem ID (sub) and stores a session.
+func (s *service) CreateSession(ctx context.Context, request *auth.SessionRequest) (string, *auth.SessionResponse, error) {
 	if err := request.Validate(); err != nil {
+		return "", nil, err
+	}
+
+	tokens, err := s.iam.ExchangeCode(ctx, request.Code)
+	if err != nil {
+		return "", nil, err
+	}
+	claims, err := s.iam.Verify(ctx, tokens.AccessToken)
+	if err != nil {
+		return "", nil, err
+	}
+	if claims.Status != "active" {
+		return "", nil, auth.ErrUnauthorized
+	}
+
+	user, err := s.repo.UpsertUser(ctx, &auth.User{IAMUserID: claims.EcosystemID, Name: claims.Name, Email: claims.Email, Status: claims.Status})
+	if err != nil {
+		return "", nil, auth.NewInternalError("failed to save user: %v", err)
+	}
+
+	sessionID, err := s.repo.CreateSession(ctx, &auth.Session{
+		UserID:          user.ID,
+		RefreshToken:    tokens.RefreshToken,
+		AccessToken:     tokens.AccessToken,
+		AccessExpiresAt: tokens.ExpiresAt,
+		ExpiresAt:       tokens.RefreshExpiresAt,
+	})
+	if err != nil {
+		return "", nil, auth.NewInternalError("failed to create session: %v", err)
+	}
+	return sessionID, toResponse(user, tokens.RefreshExpiresAt), nil
+}
+
+// GetCurrentUser returns the session's user.
+func (s *service) GetCurrentUser(ctx context.Context, sessionID string) (*auth.SessionResponse, error) {
+	sess, err := s.session(ctx, sessionID)
+	if err != nil {
 		return nil, err
 	}
-
-	// Try to get existing user by IAM user ID
-	user, err := s.repo.GetUserByIAMUserID(ctx, iamUserID)
+	user, err := s.repo.GetUserByID(ctx, sess.UserID)
 	if err != nil {
-		// If user not found, create a new user
-		if auth.IsNotFound(err) {
-			user = &auth.User{
-				ID:        generateUserID(),
-				IAMUserID: iamUserID,
-				Email:     extractEmailFromIAM(iamUserID), // In reality, this would come from JWT claims
-				Status:    "active",
-			}
-			if err := s.repo.CreateUser(ctx, user); err != nil {
-				return nil, auth.NewInternalError("failed to create user: %v", err)
-			}
-		} else {
-			return nil, auth.NewInternalError("failed to get user: %v", err)
+		return nil, err
+	}
+	return toResponse(user, sess.ExpiresAt), nil
+}
+
+func (s *service) AccessToken(ctx context.Context, sessionID string) (*auth.AccessTokenResponse, error) {
+	sess, err := s.session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &auth.AccessTokenResponse{AccessToken: sess.AccessToken, ExpiresAt: sess.AccessExpiresAt}, nil
+}
+
+// session loads a live session. Once the IAM access token has expired it
+// rotates the refresh token — that is where IAM re-checks the account, so a
+// suspended user loses access within one access-token TTL.
+func (s *service) session(ctx context.Context, sessionID string) (*auth.Session, error) {
+	sess, err := s.repo.LockSession(ctx, sessionID, func(sess *auth.Session) (*auth.Session, error) {
+		if time.Now().Before(sess.AccessExpiresAt) {
+			return nil, nil
 		}
+		tokens, err := s.iam.Refresh(ctx, sess.RefreshToken)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.iam.Verify(ctx, tokens.AccessToken); err != nil {
+			return nil, err
+		}
+		return &auth.Session{
+			ID:              sess.ID,
+			UserID:          sess.UserID,
+			RefreshToken:    tokens.RefreshToken,
+			AccessToken:     tokens.AccessToken,
+			AccessExpiresAt: tokens.ExpiresAt,
+			ExpiresAt:       tokens.RefreshExpiresAt,
+		}, nil
+	})
+	if auth.IsUnauthorized(err) {
+		// Session gone or IAM refused it (expired, reused, suspended): drop ours too.
+		s.repo.DeleteSession(ctx, sessionID)
+		return nil, err
 	}
-
-	// Create session
-	if err := s.repo.CreateSession(ctx, user.ID, user.IAMUserID); err != nil {
-		return nil, auth.NewInternalError("failed to create session: %v", err)
-	}
-
-	// Build response
-	response := &auth.SessionResponse{
-		User: auth.User{
-			ID:        user.ID,
-			IAMUserID: user.IAMUserID,
-			Email:     user.Email,
-			Status:    user.Status,
-		},
-		Authorization: auth.Authorization{
-			Roles:     []string{"candidate"}, // Default role, could be fetched from IAM
-			Companies: []string{},
-		},
-	}
-
-	return response, nil
+	return sess, err
 }
 
-// GetCurrentUser returns the current authenticated user
-func (s *service) GetCurrentUser(ctx context.Context, userID string) (*auth.SessionResponse, error) {
-	// In a real implementation, we'd fetch the user from the repository
-	// For now, return a stub response
+// Logout deletes the session and revokes it at IAM. Idempotent.
+func (s *service) Logout(ctx context.Context, sessionID string) error {
+	refreshToken, err := s.repo.DeleteSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if refreshToken == "" {
+		return nil
+	}
+	return s.iam.Logout(ctx, refreshToken)
+}
+
+func toResponse(user *auth.User, expiresAt time.Time) *auth.SessionResponse {
 	return &auth.SessionResponse{
-		User: auth.User{
-			ID:        userID,
-			IAMUserID: "iam_" + userID,
-			Email:     "user@example.com",
-			Status:    "active",
-		},
+		User: *user,
 		Authorization: auth.Authorization{
-			Roles:     []string{"candidate"},
+			Roles:     []string{"candidate"}, // ponytail: fixed role until findJobs has its own roles table (IAM doesn't own authorization)
 			Companies: []string{},
 		},
-	}, nil
-}
-
-// Logout logs the user out
-func (s *service) Logout(ctx context.Context, userID string) error {
-	return s.repo.DeleteSession(ctx, userID)
-}
-
-// generateUserID generates a simple user ID (in production, use UUID)
-func generateUserID() string {
-	return "usr_" + "123" // Placeholder
-}
-
-// extractEmailFromIAM extracts email from IAM user ID (placeholder)
-func extractEmailFromIAM(iamUserID string) string {
-	return "user@example.com" // Placeholder - in reality, parse from JWT claims
+		ExpiresAt: expiresAt,
+	}
 }

@@ -4,14 +4,16 @@ import (
 	"net/http"
 
 	"findJobs/internal/adapters/inbound"
-	appauth "findJobs/internal/application/auth"
+	"findJobs/internal/adapters/outbound/iam"
 	"findJobs/internal/adapters/outbound/postgres"
+	appauth "findJobs/internal/application/auth"
+	"findJobs/internal/pkg/config"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func InitRoutes(profileHandler *inbound.Handler, db *pgxpool.Pool) (http.Handler, error) {
+func InitRoutes(cfg *config.Config, profileHandler *inbound.Handler, db *pgxpool.Pool) (http.Handler, error) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 
@@ -23,8 +25,8 @@ func InitRoutes(profileHandler *inbound.Handler, db *pgxpool.Pool) (http.Handler
 
 	// Auth routes
 	authRepo := postgres.NewAuthRepository(db)
-	authService := appauth.NewAuthService(authRepo)
-	authHandler := inbound.NewAuthHandler(authService)
+	authService := appauth.NewAuthService(authRepo, iam.NewClient(cfg.IAM))
+	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev")
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
 

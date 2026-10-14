@@ -13,6 +13,8 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Runs migrations/*.sql in order, only when the volume is first created.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dbuser"]
       interval: 10s
@@ -54,6 +56,9 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=
       - REDIS_DB=0
+      - IAM_ENDPOINT=${IAM_ENDPOINT:-http://iam-server:8080}
+      - IAM_APP_ID=${IAM_APP_ID:-jportal}
+      - IAM_ISSUER=${IAM_ISSUER:-https://auth.company.com}
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,6 +66,15 @@ services:
         condition: service_healthy
     volumes:
       - ./migrations:/app/migrations
+    # Reach the IAM stack (../IAM, `docker compose up` there first) by service name.
+    networks:
+      - default
+      - iam
+
+networks:
+  iam:
+    name: iam_default
+    external: true
 
 volumes:
   postgres_data:

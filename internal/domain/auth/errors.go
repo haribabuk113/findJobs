@@ -4,11 +4,28 @@ import "fmt"
 
 // Domain errors for auth
 var (
-	ErrAppCodeRequired     = &ValidationError{Field: "appcode", Message: "appcode is required"}
-	ErrInvalidIAMToken     = &ValidationError{Field: "token", Message: "invalid or expired IAM token"}
-	ErrUserNotFound        = &NotFoundError{Message: "user not found in IAM"}
-	ErrSessionCreationFailed = &InternalError{Message: "failed to create session"}
+	ErrCodeRequired = &ValidationError{Field: "code", Message: "code is required"}
+	ErrUserNotFound = &NotFoundError{Message: "user not found"}
+	// ErrUnauthorized: no session, expired session, or IAM rejected the
+	// code/refresh token (expired, reused, account suspended).
+	ErrUnauthorized = &UnauthorizedError{Message: "not authenticated"}
 )
+
+// UnauthorizedError represents a missing or rejected authentication
+type UnauthorizedError struct {
+	Message string
+}
+
+// Error implements the error interface
+func (e *UnauthorizedError) Error() string {
+	return e.Message
+}
+
+// IsUnauthorized checks if an error is an UnauthorizedError
+func IsUnauthorized(err error) bool {
+	_, ok := err.(*UnauthorizedError)
+	return ok
+}
 
 // ValidationError represents a validation error
 type ValidationError struct {
