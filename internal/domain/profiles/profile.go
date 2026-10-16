@@ -22,13 +22,13 @@ type ProfileDetails struct {
 
 // ProfileRequest represents the request payload for profile operations
 type ProfileRequest struct {
-	FirstName  string   `json:"first_name"`
-	LastName   string   `json:"last_name"`
-	Bio        string   `json:"bio,omitempty"`
-	Skills     []string `json:"skills,omitempty"`
-	Designation string  `json:"designation,omitempty"`
-	Location   string   `json:"location,omitempty"`
-	AvatarURL  string   `json:"avatar_url,omitempty"`
+	FirstName   string   `json:"first_name"`
+	LastName    string   `json:"last_name"`
+	Bio         string   `json:"bio,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+	Designation string   `json:"designation,omitempty"`
+	Location    string   `json:"location,omitempty"`
+	AvatarURL   string   `json:"avatar_url,omitempty"`
 }
 
 // Validate validates the profile request
@@ -40,4 +40,9 @@ func (r *ProfileRequest) Validate() error {
 		return ErrLastNameRequired
 	}
 	return nil
+}
+
+// ProfileRequest represents the request payload for profile operations
+type ProfilePhotoResponse struct {
+	AvatarURL string `json:"avatar_url,omitempty"`
 }

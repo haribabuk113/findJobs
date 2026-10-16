@@ -8,6 +8,7 @@ var (
 	ErrLastNameRequired  = &ValidationError{Field: "last_name", Message: "last name is required"}
 	ErrProfileNotFound   = &NotFoundError{Message: "profile not found"}
 	ErrInvalidProfileID  = &ValidationError{Field: "id", Message: "invalid profile ID"}
+	ErrInvalidSlugFormat = &ValidationError{Field: "id", Message: "invalid slug format"}
 )
 
 // ValidationError represents a validation error
@@ -45,5 +46,5 @@ func IsValidation(err error) bool {
 
 // NewValidationError creates a validation error with a formatted message
 func NewValidationError(field, format string, args ...any) *ValidationError {
-		return &ValidationError{Field: field, Message: fmt.Sprintf(format, args...)}
+	return &ValidationError{Field: field, Message: fmt.Sprintf(format, args...)}
 }
