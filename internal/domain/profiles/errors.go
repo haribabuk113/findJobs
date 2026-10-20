@@ -45,5 +45,5 @@ func IsValidation(err error) bool {
 
 // NewValidationError creates a validation error with a formatted message
 func NewValidationError(field, format string, args ...any) *ValidationError {
-		return &ValidationError{Field: field, Message: fmt.Sprintf(format, args...)}
+	return &ValidationError{Field: field, Message: fmt.Sprintf(format, args...)}
 }

@@ -32,10 +32,10 @@ WORKDIR /app
 
 # Copy the binary from builder
 COPY --from=builder /app/findJobs /app/findJobs
-COPY --from=builder /app/migrations /app/migrations
 
 # Create a non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /app/uploads && chown appuser:appgroup /app/uploads
 USER appuser
 
 EXPOSE 8080

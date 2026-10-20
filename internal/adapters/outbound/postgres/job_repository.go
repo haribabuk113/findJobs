@@ -49,22 +49,21 @@ func (q *query) anyOf(column string, values []string) {
 
 func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, userID string) (*jobs.SearchResult, error) {
 	q := &query{}
-	// Public visibility: listed tier, cron-visible, and the 30-day hard cap.
-	q.add("j.is_visible AND j.tier <> 'Free'")
+	// Public visibility: open, listed tier, cron-visible, and the 30-day hard cap.
+	q.add("j.status = 'active' AND j.is_visible AND j.tier <> 'Free'")
 	q.add("j.posted_at >= NOW() - make_interval(days => ?)", min(c.PostedWithin, jobs.PublicFreshnessDays))
 	if userID != "" {
 		q.add("NOT EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id AND a.user_id = ?::uuid)", userID)
 	}
 
-	// Every keyword must match somewhere (AND), like the client preview did.
+	// Every keyword must appear in the title (requirements: search is by
+	// designation/title only, never the description).
 	for _, word := range strings.Fields(strings.ToLower(c.Query)) {
-		pattern := "%" + escapeLike(word) + "%"
-		q.add(`(j.title ILIKE ? OR co.name ILIKE ? OR j.category ILIKE ?
-			OR EXISTS (SELECT 1 FROM unnest(j.skills) s WHERE s ILIKE ?))`, pattern, pattern, pattern, pattern)
+		q.add("j.title ILIKE ?", "%"+escapeLike(word)+"%")
 	}
 	if c.LocationText != "" {
 		if strings.EqualFold(c.LocationText, "remote") {
-			q.add("j.work_mode = 'Remote'")
+			q.add("'Remote' = ANY(j.work_modes)")
 		} else {
 			q.add("j.location_label ILIKE ?", "%"+escapeLike(c.LocationText)+"%")
 		}
@@ -76,7 +75,22 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		q.add("j.location_ids && ?", c.LocationIDs)
 	}
 	if len(c.Skills) > 0 {
-		q.add("j.skills && ?", c.Skills)
+		q.add("j.skill_ids && ?::bigint[]", c.Skills)
+	}
+	if len(c.Designations) > 0 {
+		q.add("j.designation_id = ANY(?::bigint[])", c.Designations)
+	}
+	if len(c.WorkModes) > 0 {
+		q.add("j.work_modes && ?", c.WorkModes)
+	}
+	if len(c.WorkTypes) > 0 {
+		q.add("j.work_types && ?", c.WorkTypes)
+	}
+	if c.Company != "" {
+		q.add("co.slug = ?", c.Company)
+	}
+	if c.RecruiterID != "" {
+		q.add("j.recruiter_id = ?::uuid", c.RecruiterID)
 	}
 	if len(c.NoticePeriods) > 0 {
 		q.add("j.notice_periods && ?", c.NoticePeriods)
@@ -84,10 +98,7 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 	if len(c.Benefits) > 0 {
 		q.add("j.benefits && ?", c.Benefits)
 	}
-	q.anyOf("j.designation_id", c.Designations)
 	q.anyOf("j.relocation", c.Relocation)
-	q.anyOf("j.work_mode", c.WorkModes)
-	q.anyOf("j.work_type", c.WorkTypes)
 	q.anyOf("j.category", c.Categories)
 	q.anyOf("j.level", c.Levels)
 	q.anyOf("j.tier", c.Tiers)
@@ -124,17 +135,8 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		"title":  "j.title, j.id",
 	}[c.Sort]
 
-	sql := `
-		SELECT j.id, j.title, j.company_id, co.name, co.sector, co.size, j.designation_id, j.category,
-			j.level, j.summary, j.work_mode, j.work_type, j.location_type, j.location_label, j.location_ids,
-			CASE WHEN j.hide_salary THEN NULL ELSE j.salary_min::float8 END,
-			CASE WHEN j.hide_salary THEN NULL ELSE j.salary_max::float8 END,
-			CASE WHEN j.hide_salary THEN NULL ELSE j.currency::text END,
-			CASE WHEN j.hide_salary THEN NULL ELSE j.normalized_inr_amount::float8 END,
-			j.hide_salary, j.skills, j.notice_periods, j.benefits, j.relocation, j.experience_years,
-			j.interview_rounds, j.tier, j.application, j.views, j.recruiter_actions, j.posted_at,
-			COUNT(*) OVER ()
-		FROM jobs j JOIN companies co ON co.id = j.company_id
+	sql := `SELECT ` + jobCardColumns + `, COUNT(*) OVER ()
+		FROM jobs j LEFT JOIN companies co ON co.id = j.company_id
 		WHERE ` + strings.Join(q.where, "\n\t\t\tAND ") + `
 		ORDER BY ` + order + `
 		LIMIT ` + q.arg(c.PageSize) + ` OFFSET ` + q.arg((c.Page-1)*c.PageSize)
@@ -148,16 +150,35 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 	result := &jobs.SearchResult{Jobs: []jobs.Job{}, Page: c.Page, PageSize: c.PageSize}
 	for rows.Next() {
 		var j jobs.Job
-		if err := rows.Scan(&j.ID, &j.Title, &j.CompanyID, &j.CompanyName, &j.CompanySector, &j.CompanySize,
-			&j.DesignationID, &j.Category, &j.Level, &j.Summary, &j.Mode, &j.Type, &j.LocationType, &j.Location,
-			&j.LocationIDs, &j.SalaryMin, &j.SalaryMax, &j.Currency, &j.SalaryMaxINR, &j.SalaryHidden, &j.Skills,
-			&j.NoticePeriods, &j.Benefits, &j.Relocation, &j.ExperienceYears, &j.InterviewRounds, &j.Tier,
-			&j.Application, &j.Views, &j.RecruiterActions, &j.PostedAt, &result.Total); err != nil {
+		if err := rows.Scan(append(jobCardTargets(&j), &result.Total)...); err != nil {
 			return nil, err
 		}
 		result.Jobs = append(result.Jobs, j)
 	}
 	return result, rows.Err()
+}
+
+// jobCardColumns is the job card shape shared by search and job details
+// (alias j = jobs, co = companies LEFT JOINed). Hidden salaries are nulled in
+// SQL, so the amounts never leave the database.
+const jobCardColumns = `j.id, j.title, j.company_id, co.slug, COALESCE(co.name, j.company_name_text),
+	COALESCE(co.sector, ''), COALESCE(co.size, ''), j.designation_id, j.category, j.level, j.summary,
+	j.work_modes, j.work_types, j.location_type, j.location_label, j.location_ids,
+	CASE WHEN j.hide_salary THEN NULL ELSE j.salary_min::float8 END,
+	CASE WHEN j.hide_salary THEN NULL ELSE j.salary_max::float8 END,
+	CASE WHEN j.hide_salary THEN NULL ELSE j.currency::text END,
+	CASE WHEN j.hide_salary THEN NULL ELSE j.normalized_inr_amount::float8 END,
+	j.hide_salary, j.skill_ids,
+	ARRAY(SELECT s.name FROM unnest(j.skill_ids) WITH ORDINALITY AS u(id, ord) JOIN skills s ON s.id = u.id ORDER BY u.ord),
+	j.notice_periods, j.benefits, j.relocation, j.experience_years, j.interview_rounds, j.tier, j.application,
+	j.views, j.recruiter_actions, j.posted_at`
+
+func jobCardTargets(j *jobs.Job) []any {
+	return []any{&j.ID, &j.Title, &j.CompanyID, &j.CompanySlug, &j.CompanyName, &j.CompanySector, &j.CompanySize,
+		&j.DesignationID, &j.Category, &j.Level, &j.Summary, &j.WorkModes, &j.WorkTypes, &j.LocationType, &j.Location,
+		&j.LocationIDs, &j.SalaryMin, &j.SalaryMax, &j.Currency, &j.SalaryMaxINR, &j.SalaryHidden, &j.SkillIDs,
+		&j.Skills, &j.NoticePeriods, &j.Benefits, &j.Relocation, &j.ExperienceYears, &j.InterviewRounds, &j.Tier,
+		&j.Application, &j.Views, &j.RecruiterActions, &j.PostedAt}
 }
 
 // escapeLike stops user input acting as LIKE wildcards.

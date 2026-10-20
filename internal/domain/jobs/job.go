@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -10,18 +11,21 @@ import (
 // Job is a public job listing as returned by search. Salary fields are nil
 // when the employer hid the salary — the amounts never leave the backend.
 type Job struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title"`
-	CompanyID        string    `json:"company"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// CompanyID/CompanySlug are nil for free and unlinked jobs; CompanyName
+	// then falls back to the text the recruiter typed (or "").
+	CompanyID        *string   `json:"company"`
+	CompanySlug      *string   `json:"company_slug"`
 	CompanyName      string    `json:"company_name"`
 	CompanySector    string    `json:"company_sector"`
 	CompanySize      string    `json:"company_size"`
-	DesignationID    string    `json:"designation_id"`
+	DesignationID    *int64    `json:"designation_id"`
 	Category         string    `json:"category"`
 	Level            string    `json:"level"`
 	Summary          string    `json:"summary"`
-	Mode             string    `json:"mode"`
-	Type             string    `json:"type"`
+	WorkModes        []string  `json:"work_modes"`
+	WorkTypes        []string  `json:"work_types"`
 	LocationType     string    `json:"location_type"`
 	Location         string    `json:"location"`
 	LocationIDs      []string  `json:"location_ids"`
@@ -30,7 +34,8 @@ type Job struct {
 	Currency         *string   `json:"currency"`
 	SalaryMaxINR     *float64  `json:"normalized_inr_amount"`
 	SalaryHidden     bool      `json:"salary_hidden"`
-	Skills           []string  `json:"skills"`
+	SkillIDs         []int64   `json:"skill_ids"`
+	Skills           []string  `json:"skills"` // names, same order as skill_ids
 	NoticePeriods    []string  `json:"notice_periods"`
 	Benefits         []string  `json:"benefits"`
 	Relocation       string    `json:"relocation"`
@@ -58,7 +63,7 @@ var (
 	NoticePeriods      = []string{"Immediate", "15 days", "30 days", "45 days", "60 days", "90 days", "More than 90 days"}
 	RelocationOptions  = []string{"On their own", "Supported locally", "Supported internationally", "Not supported"}
 	Tiers              = []string{"Free", "Premium"}
-	ApplicationMethods = []string{"Easy apply", "External", "Email"}
+	ApplicationMethods = []string{"Easy apply", "External"}
 	PostedWithinDays   = []int{1, 3, 7, 9, 15, 30}
 	Sorts              = []string{"newest", "salary", "title"}
 )
@@ -73,11 +78,15 @@ const (
 // SearchCriteria is the single consolidated payload the Search button sends.
 // Categories are ANDed together; values inside one multi-select are ORed.
 type SearchCriteria struct {
-	Query         string   `json:"query"`         // free-text keywords: title, company, category, skills
+	// Query matches job titles only (requirements: job search is by
+	// designation/title, never description text).
+	Query         string   `json:"query"`
 	LocationText  string   `json:"location_text"` // free-text location ("Bengaluru", "remote")
-	Designations  []string `json:"designations"`  // master designation ids
-	Skills        []string `json:"skills"`
-	LocationIDs   []string `json:"location_ids"` // leaf city ids, flattened from the tristate tree by the client
+	Designations  []int64  `json:"designations"`  // designation term ids
+	Skills        []int64  `json:"skills"`        // skill term ids
+	Company       string   `json:"company"`       // company slug: its jobs tab
+	RecruiterID   string   `json:"recruiter_id"`  // a recruiter's open jobs
+	LocationIDs   []string `json:"location_ids"`  // leaf city ids, flattened from the tristate tree by the client
 	WorldRemote   bool     `json:"worldwide_remote"`
 	MinSalaryINR  float64  `json:"min_salary_inr"` // client converts the user's currency with rates.json
 	MaxSalaryINR  float64  `json:"max_salary_inr"`
@@ -112,8 +121,7 @@ func (c *SearchCriteria) Normalize() error {
 		return &ValidationError{Field: "query", Message: "search text is too long"}
 	}
 	for field, list := range map[string][]string{
-		"designations": c.Designations, "skills": c.Skills, "location_ids": c.LocationIDs,
-		"categories": c.Categories, "levels": c.Levels, "industries": c.Industries,
+		"location_ids": c.LocationIDs, "categories": c.Categories, "levels": c.Levels, "industries": c.Industries,
 		"company_sizes": c.CompanySizes, "benefits": c.Benefits, "job_ids": c.JobIDs,
 	} {
 		if len(list) > 200 {
@@ -133,6 +141,15 @@ func (c *SearchCriteria) Normalize() error {
 				return &ValidationError{Field: field, Message: fmt.Sprintf("unknown %s value %q", field, v)}
 			}
 		}
+	}
+	if len(c.Designations) > 200 || len(c.Skills) > 200 {
+		return &ValidationError{Field: "skills", Message: "too many skills or designations"}
+	}
+	if c.Company != "" && !companySlug.MatchString(c.Company) {
+		return &ValidationError{Field: "company", Message: "unknown company"}
+	}
+	if c.RecruiterID != "" && !uuidPattern.MatchString(c.RecruiterID) {
+		return &ValidationError{Field: "recruiter_id", Message: "unknown recruiter"}
 	}
 	if c.MinSalaryINR < 0 || c.MaxSalaryINR < 0 || (c.MaxSalaryINR > 0 && c.MinSalaryINR > c.MaxSalaryINR) {
 		return &ValidationError{Field: "salary", Message: "maximum salary must be at least the minimum salary"}
@@ -171,6 +188,11 @@ func (c *SearchCriteria) Normalize() error {
 	}
 	return nil
 }
+
+var (
+	companySlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$`)
+	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
 
 // ValidationError represents an invalid search request
 type ValidationError struct {

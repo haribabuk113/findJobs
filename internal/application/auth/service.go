@@ -12,6 +12,9 @@ type AuthService interface {
 	// CreateSession redeems an IAM login code and opens a findJobs session.
 	// Returns the session ID the handler sets as a cookie.
 	CreateSession(ctx context.Context, request *auth.SessionRequest) (string, *auth.SessionResponse, error)
+	// Authenticate resolves a session ID to its state (user and expiry) for
+	// per-request checks, refreshing the IAM session when needed
+	Authenticate(ctx context.Context, sessionID string) (*auth.SessionState, error)
 	// GetCurrentUser resolves a session ID to its user, refreshing the IAM
 	// session when its access token has expired
 	GetCurrentUser(ctx context.Context, sessionID string) (*auth.SessionResponse, error)

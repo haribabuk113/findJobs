@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"findJobs/internal/adapters/inbound"
 	"findJobs/internal/adapters/outbound/postgres"
@@ -17,10 +18,17 @@ import (
 	"findJobs/internal/pkg/logger"
 	postgrefacade "findJobs/internal/pkg/postgres"
 	"findJobs/internal/pkg/redis"
+	"findJobs/migrations"
 )
 
 func main() {
 	log := logger.Get()
+
+	ist, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load IST timezone")
+	}
+	time.Local = ist
 
 	// Load application configuration
 	cfg, err := config.Load()
@@ -35,9 +43,14 @@ func main() {
 	}
 	defer postgrefacade.Close()
 
-	// Initialize Redis client
-	if _, err := redis.New(cfg); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize Redis client")
+	if err := postgrefacade.Migrate(context.Background(), db, migrations.FS); err != nil {
+		log.Fatal().Err(err).Msg("Failed to apply database migrations")
+	}
+
+	rdb, err := redis.New(cfg)
+	if err != nil {
+		// Not fatal: session lookups fall through to Postgres until Redis is back.
+		log.Warn().Err(err).Msg("Redis unavailable at startup; continuing without session cache")
 	}
 	defer redis.Close()
 
@@ -48,7 +61,7 @@ func main() {
 	profileService := profiles.NewProfileService(profileRepo)
 	profileHandler := inbound.NewHandler(profileService)
 
-	routes, err := routers.InitRoutes(cfg, profileHandler, db)
+	routes, err := routers.InitRoutes(cfg, profileHandler, db, rdb)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize routes")
 	}

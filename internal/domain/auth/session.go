@@ -27,8 +27,18 @@ type User struct {
 
 // Authorization represents the authorization context in the auth response
 type Authorization struct {
-	Roles     []string `json:"roles"`
-	Companies []string `json:"companies"`
+	Roles []string `json:"roles"`
+	// Companies the user currently belongs to (approved memberships).
+	Companies []CompanyMembership `json:"companies"`
+	// PlatformAdmin: the user's ecosystem ID is in PLATFORM_ADMIN_IDS.
+	PlatformAdmin bool `json:"is_platform_admin"`
+}
+
+// CompanyMembership is one company the user is a current member of.
+type CompanyMembership struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	Role string `json:"role"` // admin | hr | employee
 }
 
 // SessionResponse represents the response for session operations
@@ -60,6 +70,17 @@ type IAMClaims struct {
 	Email       string
 	Name        string
 	Status      string
+}
+
+// SessionState is a session without its IAM tokens: all a request needs to
+// authenticate, and all that is ever cached (Redis).
+type SessionState struct {
+	ID              string
+	UserID          string
+	IAMUserID       string
+	AccessExpiresAt time.Time
+	ExpiresAt       time.Time
+	LastSeenAt      time.Time
 }
 
 // Session is a findJobs login session. The IAM refresh token lives here,

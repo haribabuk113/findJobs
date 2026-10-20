@@ -15,19 +15,25 @@ import (
 // can't read it; SameSite=Lax so cross-site POSTs don't carry it.
 const sessionCookie = "jp_session"
 
-// userIDKey is the gin context key OptionalUser sets for signed-in requests.
+// userIDKey is the gin context key the session middlewares set for signed-in requests.
 const userIDKey = "user_id"
 
 // AuthHandler handles HTTP requests for auth and delegates to the application service.
 type AuthHandler struct {
 	service      appauth.AuthService
 	secureCookie bool
+	// platformAdmins holds the IAM ecosystem IDs allowed into /admin routes.
+	platformAdmins map[string]bool
 }
 
 // NewAuthHandler creates a new HTTP handler for auth with dependency injection.
 // secureCookie should be true everywhere except plain-HTTP local dev.
-func NewAuthHandler(service appauth.AuthService, secureCookie bool) *AuthHandler {
-	return &AuthHandler{service: service, secureCookie: secureCookie}
+func NewAuthHandler(service appauth.AuthService, secureCookie bool, platformAdminIDs []string) *AuthHandler {
+	admins := make(map[string]bool, len(platformAdminIDs))
+	for _, id := range platformAdminIDs {
+		admins[id] = true
+	}
+	return &AuthHandler{service: service, secureCookie: secureCookie, platformAdmins: admins}
 }
 
 // RegisterAuthRoutes registers auth HTTP routes under the provided Gin group.
@@ -40,12 +46,7 @@ func RegisterAuthRoutes(rg *gin.RouterGroup, handler *AuthHandler) {
 
 // CreateSession handles POST /auth/session {"code": "<code from IAM redirect>"}
 func (h *AuthHandler) CreateSession(ctx *gin.Context) {
-	// JSON-only: an HTML form can't send application/json cross-site without
-	// a CORS preflight, which blocks login CSRF via an attacker's own code.
-	if ctx.ContentType() != "application/json" {
-		h.fail(ctx, http.StatusUnsupportedMediaType, fmt.Errorf("content type must be application/json"))
-		return
-	}
+	// JSONBody (router-wide) already rejected non-JSON: blocks login CSRF.
 	var request domainauth.SessionRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		h.fail(ctx, http.StatusBadRequest, domainauth.ErrCodeRequired)
@@ -65,7 +66,11 @@ func (h *AuthHandler) CreateSession(ctx *gin.Context) {
 // GetCurrentUser handles GET /auth/me
 func (h *AuthHandler) GetCurrentUser(ctx *gin.Context) {
 	h.withSession(ctx, "User retrieved successfully", func(sessionID string) (any, error) {
-		return h.service.GetCurrentUser(ctx, sessionID)
+		result, err := h.service.GetCurrentUser(ctx, sessionID)
+		if err == nil {
+			result.Authorization.PlatformAdmin = h.platformAdmins[result.User.IAMUserID]
+		}
+		return result, err
 	})
 }
 
@@ -116,12 +121,60 @@ func (h *AuthHandler) Logout(ctx *gin.Context) {
 func (h *AuthHandler) OptionalUser() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if sessionID, _ := ctx.Cookie(sessionCookie); sessionID != "" {
-			if result, err := h.service.GetCurrentUser(ctx, sessionID); err == nil {
-				ctx.Set(userIDKey, result.User.ID)
+			if state, err := h.service.Authenticate(ctx, sessionID); err == nil {
+				ctx.Set(userIDKey, state.UserID)
 			}
 		}
 		ctx.Next()
 	}
+}
+
+// RequireUser rejects requests without a valid session (401) and sets the
+// findJobs user ID in the context for the handlers behind it.
+func (h *AuthHandler) RequireUser() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		if h.requireUser(ctx) != nil {
+			ctx.Next()
+		}
+	}
+}
+
+// RequirePlatformAdmin is RequireUser plus a PLATFORM_ADMIN_IDS check (403).
+// One middleware, so the admin check can never run without the session check.
+func (h *AuthHandler) RequirePlatformAdmin() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		state := h.requireUser(ctx)
+		if state == nil {
+			return
+		}
+		if !h.platformAdmins[state.IAMUserID] {
+			h.fail(ctx, http.StatusForbidden, fmt.Errorf("not allowed"))
+			ctx.Abort()
+			return
+		}
+		ctx.Next()
+	}
+}
+
+// requireUser resolves the session or writes the error response and aborts.
+func (h *AuthHandler) requireUser(ctx *gin.Context) *domainauth.SessionState {
+	sessionID, _ := ctx.Cookie(sessionCookie)
+	if sessionID == "" {
+		h.fail(ctx, http.StatusUnauthorized, domainauth.ErrUnauthorized)
+		ctx.Abort()
+		return nil
+	}
+	state, err := h.service.Authenticate(ctx, sessionID)
+	if err != nil {
+		if domainauth.IsUnauthorized(err) {
+			h.setCookie(ctx, "", -1)
+		}
+		h.failErr(ctx, err)
+		ctx.Abort()
+		return nil
+	}
+	ctx.Set(userIDKey, state.UserID)
+	return state
 }
 
 func (h *AuthHandler) setCookie(ctx *gin.Context, value string, maxAge int) {

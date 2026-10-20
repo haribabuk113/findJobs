@@ -1,3 +1,4 @@
+-- +goose Up
 -- Job search (manual: "Search jobs", "Filters", "Salary", "Locations").
 -- Search runs in Postgres behind ports.JobRepository; the manual's Meilisearch
 -- hard-filter engine can replace that adapter once volume justifies it

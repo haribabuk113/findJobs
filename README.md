@@ -29,7 +29,7 @@ Dependencies point inward toward the domain:
 
 All responses use `{status, message, error, data}`. Errors never include internal details.
 
-### Auth — `/vol/v1/auth` (session cookie `jp_session`, HttpOnly)
+### Auth — `/api/v1/auth` (session cookie `jp_session`, HttpOnly)
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ All responses use `{status, message, error, data}`. Errors never include interna
 | GET | `/token` | Current IAM access token, for the frontend server to call IAM admin APIs. |
 | POST | `/logout` | Deletes the session and revokes it at IAM. |
 
-### Jobs — `POST /vol/v1/jobs/search`
+### Jobs — `POST /api/v1/jobs/search`
 
 One consolidated payload, sent when the user presses Search. AND across categories, OR within a list. All fields optional.
 

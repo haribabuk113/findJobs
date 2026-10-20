@@ -3,11 +3,15 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"time"
 
 	"findJobs/internal/pkg/config"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 var pool *pgxpool.Pool
@@ -54,6 +58,26 @@ func New(cfg *config.Config) (*pgxpool.Pool, error) {
 	pool = newPool
 
 	return newPool, nil
+}
+
+// Migrate applies pending migrations from fsys. A Postgres advisory lock
+// serialises concurrent starts, so only one instance migrates at a time.
+func Migrate(ctx context.Context, db *pgxpool.Pool, fsys fs.FS) error {
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("failed to create migration lock: %w", err)
+	}
+	sqlDB := stdlib.OpenDBFromPool(db)
+	defer sqlDB.Close()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fsys, goose.WithSessionLocker(locker))
+	if err != nil {
+		return fmt.Errorf("failed to create migration provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("failed to apply migrations: %w", err)
+	}
+	return nil
 }
 
 // Get returns the global PostgreSQL connection pool.
