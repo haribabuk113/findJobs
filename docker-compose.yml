@@ -23,8 +23,11 @@ services:
     image: redis:7-alpine
     container_name: jportal-redis
     restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-devredispass}", "--appendonly", "yes", "--appendfsync", "everysec"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-devredispass}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -52,16 +55,37 @@ services:
       - DB_SSL_MODE=disable
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devredispass}
       - REDIS_DB=0
+      - IAM_ENDPOINT=${IAM_ENDPOINT:-http://iam-server:8080}
+      - IAM_APP_ID=${IAM_APP_ID:-jportal}
+      - IAM_ISSUER=${IAM_ISSUER:-https://auth.company.com}
+      - PLATFORM_ADMIN_IDS=${PLATFORM_ADMIN_IDS:-}
+      # Encrypts IAM tokens at rest. DEV-ONLY default; production must supply
+      # its own from a secret manager (format kid:base64-32-bytes[,older...]).
+      - TOKEN_ENC_KEYS=${TOKEN_ENC_KEYS:-dev1:swISuuCHgTpq4kwV3Rc6UqWdjxuB2Ko4spxYswfM9wM=}
+      - SESSION_IDLE_TIMEOUT=${SESSION_IDLE_TIMEOUT:-1h}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - STORAGE_DIR=/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
+        condition: service_started
+        required: false
     volumes:
-      - ./migrations:/app/migrations
+      - uploads:/app/uploads # local ObjectStore; replace with S3 (Internxt) in production
+    # Reach the IAM stack (../IAM, `docker compose up` there first) by service name.
+    networks:
+      - default
+      - iam
+
+networks:
+  iam:
+    name: iam_default
+    external: true
 
 volumes:
   postgres_data:
   redis_data:
+  uploads:

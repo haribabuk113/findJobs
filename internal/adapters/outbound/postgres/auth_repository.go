@@ -3,9 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -13,74 +11,51 @@ import (
 	"findJobs/internal/ports"
 )
 
-// AuthRepository is the outbound adapter implementing the application port.
+// AuthRepository is the outbound adapter for users. Sessions: session_store.go.
 type AuthRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewAuthRepository creates the PostgreSQL adapter for auth persistence.
+// NewAuthRepository creates the PostgreSQL adapter for user persistence.
 func NewAuthRepository(pool *pgxpool.Pool) ports.AuthRepository {
 	return &AuthRepository{pool: pool}
 }
 
-func (r *AuthRepository) GetUserByIAMUserID(ctx context.Context, iamUserID string) (*auth.User, error) {
-	const query = `SELECT id, iam_user_id, email, status FROM users WHERE iam_user_id = $1`
-	row := r.pool.QueryRow(ctx, query, iamUserID)
-
-	var user auth.User
-	var id uuid.UUID
-	var status string
-	if err := row.Scan(&id, &user.IAMUserID, &user.Email, &status); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, auth.ErrUserNotFound
-		}
+func (r *AuthRepository) UpsertUser(ctx context.Context, user *auth.User) (*auth.User, error) {
+	const query = `
+		INSERT INTO users (iam_user_id, name, email, status) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (iam_user_id) DO UPDATE
+		SET name = EXCLUDED.name, email = EXCLUDED.email, status = EXCLUDED.status, updated_at = NOW()
+		RETURNING id::text, iam_user_id, name, email, status`
+	var u auth.User
+	err := r.pool.QueryRow(ctx, query, user.IAMUserID, user.Name, user.Email, user.Status).
+		Scan(&u.ID, &u.IAMUserID, &u.Name, &u.Email, &u.Status)
+	if err != nil {
 		return nil, err
 	}
-
-	user.ID = id.String()
-	user.Status = status
-	return &user, nil
+	return &u, nil
 }
 
-func (r *AuthRepository) CreateUser(ctx context.Context, user *auth.User) error {
-	const query = `INSERT INTO users (id, iam_user_id, email, status) VALUES ($1, $2, $3, $4)`
-	_, err := r.pool.Exec(ctx, query, uuid.NullUUID{UUID: uuid.New(), Valid: true}, user.IAMUserID, user.Email, user.Status)
-	return err
-}
-
-func (r *AuthRepository) CreateSession(ctx context.Context, userID string, iamUserID string) error {
-	const query = `INSERT INTO sessions (user_id, expires_at) VALUES ($1, $2)`
-	uid, err := uuid.Parse(userID)
+func (r *AuthRepository) GetUserByID(ctx context.Context, userID string) (*auth.User, error) {
+	const query = `SELECT id::text, iam_user_id, name, email, status FROM users WHERE id = $1`
+	var u auth.User
+	err := r.pool.QueryRow(ctx, query, userID).Scan(&u.ID, &u.IAMUserID, &u.Name, &u.Email, &u.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, auth.ErrUserNotFound
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = r.pool.Exec(ctx, query, uid, time.Now().Add(24*time.Hour))
-	return err
+	return &u, nil
 }
 
-func (r *AuthRepository) GetSession(ctx context.Context, userID string) (string, error) {
-	const query = `SELECT id FROM sessions WHERE user_id = $1 AND expires_at > NOW()`
-	uid, err := uuid.Parse(userID)
+func (r *AuthRepository) UserCompanies(ctx context.Context, userID string) ([]auth.CompanyMembership, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT c.slug, c.name, m.role FROM company_members m JOIN companies c ON c.id = m.company_id
+		WHERE m.user_id = $1 AND m.status = 'current' AND c.deleted_at IS NULL
+		ORDER BY (m.role = 'admin') DESC, c.name`, userID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var sessionID uuid.UUID
-	row := r.pool.QueryRow(ctx, query, uid)
-	if err := row.Scan(&sessionID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
-		}
-		return "", err
-	}
-	return sessionID.String(), nil
-}
-
-func (r *AuthRepository) DeleteSession(ctx context.Context, userID string) error {
-	const query = `DELETE FROM sessions WHERE user_id = $1`
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		return err
-	}
-	_, err = r.pool.Exec(ctx, query, uid)
-	return err
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[auth.CompanyMembership])
 }

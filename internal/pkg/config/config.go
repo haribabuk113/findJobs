@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -11,10 +12,24 @@ type Config struct {
 	Server      ServerConfig
 	Database    DatabaseConfig
 	Redis       RedisConfig
-	Search      SearchConfig
 	IAM         IAMConfig
-	JWT         JWTConfig
 	RateLimit   RateLimitConfig
+	// PlatformAdminIDs are the IAM ecosystem IDs (JWT sub) allowed into the
+	// findJobs /admin routes. Separate from IAM's own admin list.
+	PlatformAdminIDs []string
+	Session          SessionConfig
+	// FXEndpoint returns exchange rates with INR as the base (open.er-api.com format).
+	FXEndpoint string
+	// StorageDir is where the local-disk ObjectStore keeps uploads.
+	StorageDir string
+}
+
+type SessionConfig struct {
+	// TokenEncKeys is "kid:base64key[,...]" (32-byte keys); the first one
+	// encrypts IAM tokens at rest. Required: there is deliberately no default.
+	TokenEncKeys string
+	// IdleTimeout ends sessions unused this long (IAM's 30-day absolute limit still applies).
+	IdleTimeout time.Duration
 }
 
 type ServerConfig struct {
@@ -23,6 +38,9 @@ type ServerConfig struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	ShutdownTimeout time.Duration
+	// TrustedProxies are the CIDRs/IPs (SvelteKit server, Cloudflare) whose
+	// X-Forwarded-For is believed. Empty: trust none, use the TCP peer.
+	TrustedProxies []string
 }
 
 type DatabaseConfig struct {
@@ -48,25 +66,11 @@ type RedisConfig struct {
 	DialTimeout  time.Duration
 }
 
-type SearchConfig struct {
-	Host      string
-	APIKey    string
-	IndexName string
-}
-
 type IAMConfig struct {
-	Endpoint     string
-	ClientID     string
-	ClientSecret string
-	TokenURL     string
-	Audience     string
-}
-
-type JWTConfig struct {
-	SecretKey          string
-	AccessTokenExpiry  time.Duration
-	RefreshTokenExpiry time.Duration
-	TokenType          string
+	Endpoint string // IAM base URL, server-to-server
+	AppID    string // this app's id registered in IAM_ALLOWED_APPS
+	Issuer   string // must match IAM's JWT_ISSUER
+	Audience string // IAM tokens always carry aud "app-registry"
 }
 
 type RateLimitConfig struct {
@@ -84,6 +88,7 @@ func Load() (*Config, error) {
 			ReadTimeout:     getEnvDurationOrDefault("SERVER_READ_TIMEOUT", "15s"),
 			WriteTimeout:    getEnvDurationOrDefault("SERVER_WRITE_TIMEOUT", "15s"),
 			ShutdownTimeout: getEnvDurationOrDefault("SERVER_SHUTDOWN_TIMEOUT", "10s"),
+			TrustedProxies:  getEnvListOrDefault("TRUSTED_PROXIES"),
 		},
 		Database: DatabaseConfig{
 			Host:            getEnvOrDefault("DB_HOST", "localhost"),
@@ -106,27 +111,22 @@ func Load() (*Config, error) {
 			MinIdleConns: getEnvIntOrDefault("REDIS_MIN_IDLE_CONNS", 5),
 			DialTimeout:  getEnvDurationOrDefault("REDIS_DIAL_TIMEOUT", "5s"),
 		},
-		Search: SearchConfig{
-			Host:      getEnvOrDefault("SEARCH_HOST", "localhost"),
-			APIKey:    getEnvOrDefault("SEARCH_API_KEY", ""),
-			IndexName: "jobs",
-		},
 		IAM: IAMConfig{
-			Endpoint:     getEnvOrDefault("IAM_ENDPOINT", "http://localhost:8081"),
-			ClientID:     getEnvOrDefault("IAM_CLIENT_ID", "jportal"),
-			ClientSecret: getEnvOrDefault("IAM_CLIENT_SECRET", "secret"),
-			TokenURL:     getEnvOrDefault("IAM_TOKEN_URL", "http://localhost:8081/api/v1/token"),
-			Audience:     getEnvOrDefault("IAM_AUDIENCE", "jportal"),
-		},
-		JWT: JWTConfig{
-			SecretKey:          getEnvOrDefault("JWT_SECRET", "default-secret-key-change-in-production"),
-			AccessTokenExpiry:  getEnvDurationOrDefault("JWT_ACCESS_EXPIRY", "15m"),
-			RefreshTokenExpiry: getEnvDurationOrDefault("JWT_REFRESH_EXPIRY", "168h"),
-			TokenType:          "Bearer",
+			Endpoint: getEnvOrDefault("IAM_ENDPOINT", "http://localhost:8080"),
+			AppID:    getEnvOrDefault("IAM_APP_ID", "jportal"),
+			Issuer:   getEnvOrDefault("IAM_ISSUER", "https://auth.company.com"),
+			Audience: getEnvOrDefault("IAM_AUDIENCE", "app-registry"),
 		},
 		RateLimit: RateLimitConfig{
 			RequestsPerMinute: getEnvIntOrDefault("RATE_LIMIT_RPM", 100),
 			Burst:             getEnvIntOrDefault("RATE_LIMIT_BURST", 20),
+		},
+		PlatformAdminIDs: getEnvListOrDefault("PLATFORM_ADMIN_IDS"),
+		FXEndpoint:       getEnvOrDefault("FX_ENDPOINT", "https://open.er-api.com/v6/latest/INR"),
+		StorageDir:       getEnvOrDefault("STORAGE_DIR", "./uploads"),
+		Session: SessionConfig{
+			TokenEncKeys: os.Getenv("TOKEN_ENC_KEYS"),
+			IdleTimeout:  getEnvDurationOrDefault("SESSION_IDLE_TIMEOUT", "168h"),
 		},
 	}, nil
 }
@@ -136,6 +136,17 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getEnvListOrDefault splits a comma-separated variable, dropping blanks.
+func getEnvListOrDefault(key string) []string {
+	var list []string
+	for _, item := range strings.Split(os.Getenv(key), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			list = append(list, item)
+		}
+	}
+	return list
 }
 
 func getEnvIntOrDefault(key string, defaultValue int) int {

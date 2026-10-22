@@ -31,14 +31,12 @@ func New(cfg *config.Config) (*redis.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Verify the connection works
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		_ = redisClient.Close()
-		return nil, fmt.Errorf("failed to ping redis: %w", err)
-	}
-
-	// Store the client in the package-level variable for the Get() function
+	// Verify the connection works. On failure the client is still returned:
+	// Redis is only a cache, so callers may start without it and reconnect later.
 	client = redisClient
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		return redisClient, fmt.Errorf("failed to ping redis: %w", err)
+	}
 
 	return redisClient, nil
 }
