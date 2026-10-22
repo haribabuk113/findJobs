@@ -8,7 +8,9 @@ var (
 	ErrLastNameRequired  = &ValidationError{Field: "last_name", Message: "last name is required"}
 	ErrProfileNotFound   = &NotFoundError{Message: "profile not found"}
 	ErrInvalidProfileID  = &ValidationError{Field: "id", Message: "invalid profile ID"}
-	ErrInvalidSlugFormat = &ValidationError{Field: "id", Message: "invalid slug format"}
+	ErrInvalidID         = &ValidationError{Field: "id", Message: "invalid ID"}
+	ErrInvalidSlugFormat = &ValidationError{Field: "slug", Message: "invalid slug format"}
+	ErrInvalidMasterType = &ValidationError{Message: "unknown master type"}
 )
 
 // ValidationError represents a validation error

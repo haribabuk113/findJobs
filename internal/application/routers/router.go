@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func InitRoutes(authHandler *inbound.AuthHandler, mastersHandler *inbound.MastersHandler, profileHandler *inbound.Handler) (http.Handler, error) {
+func InitRoutes(authHandler *inbound.AuthHandler, mastersHandler *inbound.MastersHandler, profileHandler *inbound.ProfileHandler) (http.Handler, error) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 
@@ -19,7 +19,7 @@ func InitRoutes(authHandler *inbound.AuthHandler, mastersHandler *inbound.Master
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
 
 	// Masters routes
-	masterGroup := api.Group("/master")
+	masterGroup := api.Group("/admin")
 	inbound.RegisterMastersRoutes(masterGroup, mastersHandler)
 
 	// Profile routes
