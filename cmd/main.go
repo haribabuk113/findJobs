@@ -12,7 +12,6 @@ import (
 
 	"findJobs/internal/adapters/inbound"
 	"findJobs/internal/adapters/outbound/postgres"
-	appauth "findJobs/internal/application/auth"
 	"findJobs/internal/application/masters"
 	"findJobs/internal/application/profiles"
 
@@ -60,11 +59,6 @@ func main() {
 	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
 	// Auth routes
-	authRepo := postgres.NewAuthRepository(db)
-	authService := appauth.NewAuthService(authRepo)
-	authHandler := inbound.NewAuthHandler(authService)
-
-	// Auth routes
 	masterRepo := postgres.NewMasterRepository(db)
 	masterService := masters.NewMasterService(masterRepo)
 	masterHandler := inbound.NewMastersHandler(masterService)
@@ -74,7 +68,7 @@ func main() {
 	profileService := profiles.NewProfileService(profileRepo)
 	profileHandler := inbound.NewHandler(profileService)
 
-	routes, err := routers.InitRoutes(cfg, authHandler, masterHandler, profileHandler, db, rdb)
+	routes, err := routers.InitRoutes(cfg, masterHandler, profileHandler, db, rdb)
 
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize routes")

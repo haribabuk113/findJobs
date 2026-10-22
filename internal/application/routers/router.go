@@ -8,10 +8,6 @@ import (
 
 	"findJobs/internal/adapters/inbound"
 
-	"github.com/gin-gonic/gin"
-)
-
-func InitRoutes(authHandler *inbound.AuthHandler, mastersHandler *inbound.MastersHandler, profileHandler *inbound.ProfileHandler) (http.Handler, error) {
 	"findJobs/internal/adapters/outbound/fx"
 	"findJobs/internal/adapters/outbound/iam"
 	"findJobs/internal/adapters/outbound/postgres"
@@ -38,7 +34,7 @@ const (
 	maxImageBody = 5 << 20
 )
 
-func InitRoutes(cfg *config.Config, profileHandler *inbound.Handler, db *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
+func InitRoutes(cfg *config.Config, mastersHandler *inbound.MastersHandler, profileHandler *inbound.ProfileHandler, db *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	// Gin trusts every proxy by default, which would let any client spoof
@@ -52,10 +48,6 @@ func InitRoutes(cfg *config.Config, profileHandler *inbound.Handler, db *pgxpool
 	router.Use(inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
 
 	api := router.Group("/api/v1")
-
-	// Auth routes
-	authGroup := api.Group("/auth")
-	inbound.RegisterAuthRoutes(authGroup, authHandler)
 
 	// Masters routes
 	masterGroup := api.Group("/admin")
