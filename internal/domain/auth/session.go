@@ -13,6 +13,7 @@ func (r *SessionRequest) Validate() error {
 	if r.Code == "" {
 		return ErrCodeRequired
 	}
+	// TODO Need to add Validation of cross checking the appcode through env values
 	return nil
 }
 

@@ -2,704 +2,266 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"errors"
-	apperror "findJobs/internal/utils/errors"
-	"net/http"
-
-	"findJobs/internal/ports"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	models "findJobs/internal/domain/profiles"
+	"findJobs/internal/domain/companies"
+	"findJobs/internal/domain/profiles"
+	"findJobs/internal/ports"
 )
 
-// ProfileRepository is the outbound adapter implementing the application port.
+// ProfileRepository is the Postgres adapter for candidate profiles.
 type ProfileRepository struct {
 	pool *pgxpool.Pool
 }
 
-// NewProfileRepository creates the PostgreSQL adapter for profile persistence.
+// NewProfileRepository creates the PostgreSQL adapter for profiles.
 func NewProfileRepository(pool *pgxpool.Pool) ports.ProfileRepository {
 	return &ProfileRepository{pool: pool}
 }
 
-// One round trip: scalar columns + one JSON array per child collection.
-// Each json_agg is a correlated subquery, so there is no row multiplication
-// between collections (no cartesian explosion from joining many 1-to-N tables).
-const profileQuery = `
-SELECT
-    c.candidate_id,
-    c.full_name,
-    c.profile_slug,
-    c.profile_photo_url,
-    c.gender,
-    c.headline_text,
-    c.headline_designation_id,
-    c.about_summary,
-    c.about_summary_updated_at,
+const profileColumns = `p.user_id, p.slug, p.name, p.headline, p.location_label, p.about, p.about_updated_at, p.photo_key,
+	p.gender, p.pronouns, p.contact_email, p.phone, p.experience_years, p.notice_period, p.serving_notice,
+	COALESCE(to_char(p.last_working_date, 'YYYY-MM-DD'), ''), p.salary_currency, p.current_salary::float8,
+	p.expected_salary::float8, p.hourly_rate::float8, p.work_types, p.location_ids,
+	ARRAY(SELECT d.name FROM unnest(p.designation_ids) WITH ORDINALITY AS u(id, ord) JOIN designations d ON d.id = u.id ORDER BY u.ord),
+	p.open_to_remote, p.relocation, p.is_public, p.open_to_work, p.hide_current_salary, p.hide_hourly_rate,
+	p.hide_contact, p.hide_expected_salary, p.resume_applications_only, p.details, p.website, p.work_mode`
 
-    COALESCE((SELECT json_agg(p.pronoun ORDER BY p.pronoun)
-              FROM candidate_pronouns p
-              WHERE p.candidate_id = c.candidate_id), '[]'::json)              AS pronouns,
+func (r *ProfileRepository) Get(ctx context.Context, userID string) (*profiles.Profile, error) {
+	return r.load(ctx, `WHERE p.user_id = $1`, userID)
+}
 
-    COALESCE((SELECT json_agg(json_build_object('platform', h.platform, 'url', h.url) ORDER BY h.id)
-              FROM candidate_social_handles h
-              WHERE h.candidate_id = c.candidate_id), '[]'::json)              AS social_handles,
+func (r *ProfileRepository) GetPublic(ctx context.Context, slug string) (*profiles.Profile, error) {
+	return r.load(ctx, `WHERE p.slug = $1 AND p.is_public`, slug)
+}
 
-    cs.current_amount::float8,
-    cs.current_currency,
-    COALESCE(cs.current_is_hidden, FALSE),
-    cs.expected_amount::float8,
-    cs.expected_currency,
-
-    COALESCE((SELECT json_agg(json_build_object('designation_id', d.designation_id, 'name', d.name)
-                              ORDER BY d.name)
-              FROM candidate_target_roles tr
-              JOIN master_designations d ON d.designation_id = tr.designation_id
-              WHERE tr.candidate_id = c.candidate_id), '[]'::json)             AS target_roles,
-
-    COALESCE((SELECT json_agg(json_build_object('location_id', l.location_id, 'name', l.name, 'level', l.level)
-                              ORDER BY l.name)
-              FROM candidate_target_locations tl
-              JOIN master_locations l ON l.location_id = tl.location_id
-              WHERE tl.candidate_id = c.candidate_id), '[]'::json)             AS target_locations,
-
-    COALESCE(pref.open_to_remote, FALSE),
-
-    COALESCE((SELECT json_agg(w.work_type ORDER BY w.work_type)
-              FROM candidate_work_types w
-              WHERE w.candidate_id = c.candidate_id), '[]'::json)              AS work_types,
-
-    COALESCE((SELECT json_agg(json_build_object(
-                  'timeline_id',         t.timeline_id,
-                  'company',             CASE
-                                           WHEN t.company_id IS NOT NULL
-                                             THEN json_build_object('company_id', mc.company_id, 'name', mc.name)
-                                           WHEN t.company_name_raw IS NOT NULL
-                                             THEN json_build_object('company_id', NULL, 'name', t.company_name_raw)
-                                         END,
-                  'designation_title',   t.designation_title,
-                  'start_date',          t.start_date,
-                  'end_date',            t.end_date,
-                  'is_current',          t.is_current,
-                  'description',         t.description,
-                  'verification_status', t.verification_status
-              ) ORDER BY t.is_current DESC, t.start_date DESC, t.timeline_id DESC)
-              FROM candidate_timeline t
-              LEFT JOIN master_companies mc ON mc.company_id = t.company_id
-              WHERE t.candidate_id = c.candidate_id), '[]'::json)              AS timeline,
-
-    COALESCE((SELECT json_agg(json_build_object(
-                  'group_id',      g.group_id,
-                  'group_name',    g.group_name,
-                  'display_order', g.display_order,
-                  'skills',        COALESCE((SELECT json_agg(json_build_object(
-                                                   'skill_id',      s.skill_id,
-                                                   'name',          s.name,
-                                                   'display_order', i.display_order
-                                             ) ORDER BY i.display_order, i.id)
-                                             FROM candidate_skill_group_items i
-                                             JOIN master_skills s ON s.skill_id = i.skill_id
-                                             WHERE i.group_id = g.group_id), '[]'::json)
-              ) ORDER BY g.display_order, g.group_id)
-              FROM candidate_skill_groups g
-              WHERE g.candidate_id = c.candidate_id), '[]'::json)              AS skill_groups,
-
-    COALESCE(cc.email, c.email),
-    cc.phone_number,
-    loc.location_id,
-    loc.name,
-
-    r.access_control,
-    r.public_short_link,
-
-    --Add Work Authorization query
-
-FROM candidates c
-LEFT JOIN candidate_salary      cs   ON cs.candidate_id   = c.candidate_id
-LEFT JOIN candidate_preferences pref ON pref.candidate_id = c.candidate_id
-LEFT JOIN candidate_contact     cc   ON cc.candidate_id   = c.candidate_id
-LEFT JOIN master_locations      loc  ON loc.location_id   = cc.primary_location_id
-LEFT JOIN candidate_resume      r    ON r.candidate_id    = c.candidate_id
-WHERE c.profile_slug = $1
-  AND c.status = 'active'
-`
-
-/*
- COALESCE((SELECT json_agg(json_build_object(
-               'country',            wa.country,
-               'authorization_type', wa.authorization_type,
-               'valid_from',         wa.valid_from,
-               'valid_until',        wa.valid_until,
-               'is_indefinite',      wa.is_indefinite
-           ) ORDER BY wa.valid_until DESC NULLS FIRST, wa.id)
-           FROM candidate_work_authorization wa
-           WHERE wa.candidate_id = c.candidate_id), '[]'::json)             AS work_authorization
-*/
-
-// var ErrNotFound = errors.New("profile not found")
-
-// func (r *ProfileRepository) GetProfile(ctx context.Context, userID int64) ([]profiles.ProfileDetails, error) {
-// 	// TODO: replace stub with real query against the database.
-// 	return []profiles.ProfileDetails{}, nil
-// }
-
-// func (r *ProfileRepository) UpdateProfile(ctx context.Context, request *profiles.ProfileRequest) error {
-// 	// TODO: replace stub with real persistence against the database.
-// 	return nil
-// }
-
-// func (r *ProfileRepository) GetCandidateProfile(ctx context.Context, userID int64, userSlug string) (profiles.ProfileDetails, error) {
-// 	var profileDetails profiles.ProfileDetails
-
-// 	query := `SELECT id, iam_user_id, email, status FROM candidates WHERE iam_user_id = $1`
-// 	var value any
-// 	if userID > 0 {
-// 		query += ` WHERE candidate_id = $1`
-// 		value = userID
-// 	} else if userSlug != "" {
-// 		query += ` WHERE profile_slug = $1`
-// 		value = userSlug
-// 	}
-// 	row := r.pool.QueryRow(ctx, query, value)
-// 	CandidateProfileDtoMapper(ctx, row, &profileDetails)
-
-// 	p, err := a.LoadProfile(r.Context(), r.PathValue("slug"))
-// 	switch {
-// 	case errors.Is(err, ErrNotFound):
-// 		writeErr(w, http.StatusNotFound, "profile not found")
-// 	case err != nil:
-// 		writeErr(w, http.StatusInternalServerError, "internal error")
-// 	default:
-// 		writeJSON(w, http.StatusOK, p)
-// 	}
-
-// 	return profileDetails, nil
-// }
-
-// func (r *ProfileRepository) UpdateCandidateProfile(ctx context.Context, request *profiles.ProfileRequest) (string, error) {
-// 	return "", nil
-// }
-
-// func (r *ProfileRepository) GetProfileDetails(ctx context.Context, userID int64) (profiles.Profile, error) {
-// 	// TODO: replace stub with real query against the database.
-// 	return profiles.Profile{}, nil
-// }
-
-// func (r *ProfileRepository) GetProfilePhoto(ctx context.Context, suserID int64) (profiles.ProfilePhotoResponse, error) {
-// 	// TODO: replace stub with real persistence against the database.
-// 	return profiles.ProfilePhotoResponse{}, nil
-// }
-
-// func (r *ProfileRepository) SetProfilePhotoURL(ctx context.Context, userID int64, url string) error {
-// 	// TODO: replace stub with real persistence against the database.
-// 	return nil
-// }
-
-// func (r *ProfileRepository) GetProfileSlug(ctx context.Context, userID int64) (string, error) {
-// 	// TODO: replace stub with real persistence against the database.
-// 	return "", nil
-// }
-
-// func (r *ProfileRepository) UpdateProfileSlug(ctx context.Context, slug string, userID int64) (string, error) {
-// 	// TODO: replace stub with real persistence against the database.
-// 	return "", nil
-// }
-
-func (r *ProfileRepository) GetRecordBySlug(ctx context.Context, slug string) (*models.ProfileRecord, error) {
-	var (
-		p                                                                      models.ProfileRecord
-		pronounsJ, socialJ, rolesJ, locsJ, workTypesJ, timelineJ, skillGroupsJ []byte
-		locID                                                                  *int64
-		locName                                                                *string
-	)
-
-	err := r.pool.QueryRow(ctx, profileQuery, slug).Scan(
-		&p.CandidateID, &p.FullName, &p.ProfileSlug, &p.ProfilePhotoURL, &p.Gender,
-		&p.HeadlineText, &p.HeadlineDesignationID, &p.AboutSummary, &p.AboutSummaryUpdatedAt,
-		&pronounsJ, &socialJ,
-		&p.Salary.CurrentAmount, &p.Salary.CurrentCurrency, &p.Salary.CurrentIsHidden,
-		&p.Salary.ExpectedAmount, &p.Salary.ExpectedCurrency,
-		&rolesJ, &locsJ, &p.OpenToRemote, &workTypesJ,
-		&timelineJ, &skillGroupsJ,
-		&p.Email, &p.Phone, &locID, &locName,
-		&p.ResumeAccessControl, &p.ResumeShortLink,
-		// &waJ,
-	)
+func (r *ProfileRepository) load(ctx context.Context, where string, arg string) (*profiles.Profile, error) {
+	var p profiles.Profile
+	var userID string
+	var photo *string
+	var details []byte
+	err := r.pool.QueryRow(ctx, `SELECT `+profileColumns+` FROM profiles p `+where, arg).Scan(
+		&userID, &p.Slug, &p.Name, &p.Title, &p.Location, &p.About, &p.AboutUpdated, &photo,
+		&p.Gender, &p.Pronouns, &p.Email, &p.Phone, &p.ExperienceYears, &p.Notice, &p.IsServingNotice,
+		&p.LastWorkingDate, &p.SalaryCurrency, &p.CurrentSalary, &p.ExpectedSalary, &p.HourlyRate,
+		&p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.OpenToRemote, &p.Relocation,
+		&p.Visible, &p.Open, &p.CurrentSalaryPrivate, &p.HourlyPrivate, &p.ContactPrivate, &p.SalaryPrivate,
+		&p.ResumePrivate, &details, &p.Website, &p.WorkMode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, profiles.ErrNotFound
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, &apperror.Error{Status: http.StatusNotFound, Message: "profile not found"}
-		}
-		return nil, translate(err)
+		return nil, err
+	}
+	p.Saved = true
+	p.Photo = companies.FileURL(photo)
+	if err := json.Unmarshal(details, &p.Details); err != nil {
+		return nil, err
 	}
 
-	for _, d := range []struct {
-		raw []byte
-		dst any
-	}{
-		{pronounsJ, &p.Pronouns},
-		{socialJ, &p.SocialHandles},
-		{rolesJ, &p.TargetRoles},
-		{locsJ, &p.TargetLocations},
-		{workTypesJ, &p.WorkTypes},
-		{timelineJ, &p.Timeline},
-		{skillGroupsJ, &p.SkillGroups},
-		// {waJ, &p.WorkAuthorizations},
-	} {
-		if err := decodeInto(d.raw, d.dst); err != nil {
+	rows, err := r.pool.Query(ctx, `
+		SELECT ps.group_name, s.name FROM profile_skills ps JOIN skills s ON s.id = ps.skill_id
+		WHERE ps.user_id = $1 ORDER BY ps.position`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var group, skill string
+		if err := rows.Scan(&group, &skill); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		if n := len(p.SkillGroups); n == 0 || p.SkillGroups[n-1].Name != group {
+			p.SkillGroups = append(p.SkillGroups, profiles.SkillGroup{Name: group})
+		}
+		last := &p.SkillGroups[len(p.SkillGroups)-1]
+		last.Skills = append(last.Skills, skill)
+		p.Skills = append(p.Skills, skill)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	if locID != nil && locName != nil {
-		p.PrimaryLocation = &models.LocationRef{LocationID: *locID, Name: *locName}
+	// Verification is the company's answer to the membership request.
+	rows, err = r.pool.Query(ctx, `
+		SELECT e.company_name, e.title, e.work_type, e.start_month, COALESCE(e.end_month, ''), e.is_current,
+			e.promoted, e.description, COALESCE(c.slug, ''),
+			CASE m.status WHEN 'current' THEN 'Verified' WHEN 'past' THEN 'Verified' WHEN 'pending' THEN 'Pending'
+				WHEN 'rejected' THEN 'Rejected' ELSE 'Unverified' END
+		FROM profile_experiences e
+		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
+		LEFT JOIN company_members m ON m.company_id = c.id AND m.user_id = e.user_id
+		WHERE e.user_id = $1 ORDER BY e.position`, userID)
+	if err != nil {
+		return nil, err
 	}
+	p.Experiences, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (profiles.Experience, error) {
+		var e profiles.Experience
+		err := row.Scan(&e.Company, &e.Title, &e.Type, &e.Start, &e.End, &e.Current, &e.Promoted, &e.Description,
+			&e.CompanySlug, &e.Verification)
+		return e, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.EnsureLists()
 	return &p, nil
 }
 
-func (r *ProfileRepository) Update(ctx context.Context, id int64, p models.CandidatePatch) error {
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidates SET
-		  full_name                = COALESCE($2::varchar, full_name),
-		  profile_photo_url        = COALESCE($3::text, profile_photo_url),
-		  gender                   = COALESCE($4::varchar, gender),
-		  headline_text            = COALESCE($5::varchar, headline_text),
-		  headline_designation_id  = COALESCE($6::bigint, headline_designation_id),
-		  about_summary_updated_at = CASE WHEN $7::varchar IS NOT NULL
-		                                   AND $7::varchar IS DISTINCT FROM about_summary
-		                                  THEN now() ELSE about_summary_updated_at END,
-		  about_summary            = COALESCE($7::varchar, about_summary),
-		  updated_at               = now()
-		WHERE candidate_id = $1 AND status = 'active'`,
-		id, p.FullName, p.ProfilePhotoURL, p.Gender, p.HeadlineText, p.HeadlineDesignationID, p.AboutSummary)
-	return affected(res, err)
+func (r *ProfileRepository) Account(ctx context.Context, userID string) (string, string, error) {
+	var name, email string
+	err := r.pool.QueryRow(ctx, `SELECT name, email FROM users WHERE id = $1`, userID).Scan(&name, &email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", profiles.ErrNotFound
+	}
+	return name, email, err
 }
 
-// Soft delete: flips status. FK cascades only matter if you ever hard-delete.
-func (r *ProfileRepository) SoftDelete(ctx context.Context, id int64) error {
-	res, err := r.pool.Exec(ctx,
-		`UPDATE candidates SET status = 'deleted', updated_at = now() WHERE candidate_id = $1 AND status = 'active'`, id)
-	return affected(res, err)
+func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles.Profile, skills []ports.ProfileSkill, designationIDs []int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var rate float64
+	err = tx.QueryRow(ctx, `SELECT rate_to_inr::float8 FROM exchange_rates WHERE currency = $1`, p.SalaryCurrency).Scan(&rate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &profiles.ValidationError{Field: "salary_currency", Message: "unknown currency"}
+	}
+	if err != nil {
+		return err
+	}
+	var known int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM locations WHERE id = ANY($1)`, p.PreferredLocations).Scan(&known); err != nil {
+		return err
+	}
+	if known != len(p.PreferredLocations) {
+		return &profiles.ValidationError{Field: "preferred_locations", Message: "unknown location"}
+	}
+
+	p.EnsureLists() // nil slices would be stored as NULL arrays
+	if designationIDs == nil {
+		designationIDs = []int64{}
+	}
+	details, err := json.Marshal(p.Details)
+	if err != nil {
+		return err
+	}
+	var lastDay *time.Time
+	if d, err := time.Parse(time.DateOnly, p.LastWorkingDate); err == nil {
+		lastDay = &d
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO profiles (user_id, slug, name, headline, location_label, about, about_updated_at, gender, pronouns,
+			contact_email, phone, experience_years, notice_period, serving_notice, last_working_date, salary_currency,
+			current_salary, expected_salary, expected_salary_inr, hourly_rate, work_types, location_ids, designation_ids,
+			open_to_remote, relocation, is_public, open_to_work, hide_current_salary, hide_hourly_rate, hide_contact,
+			hide_expected_salary, resume_applications_only, details, website, work_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 <> '' THEN NOW() END, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+			$16, $17, $17 * $18::numeric, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+		ON CONFLICT (user_id) DO UPDATE SET slug = EXCLUDED.slug, name = EXCLUDED.name, headline = EXCLUDED.headline,
+			location_label = EXCLUDED.location_label, about = EXCLUDED.about,
+			about_updated_at = CASE WHEN profiles.about IS DISTINCT FROM EXCLUDED.about THEN NOW() ELSE profiles.about_updated_at END,
+			gender = EXCLUDED.gender, pronouns = EXCLUDED.pronouns, contact_email = EXCLUDED.contact_email,
+			phone = EXCLUDED.phone, experience_years = EXCLUDED.experience_years, notice_period = EXCLUDED.notice_period,
+			serving_notice = EXCLUDED.serving_notice, last_working_date = EXCLUDED.last_working_date,
+			salary_currency = EXCLUDED.salary_currency, current_salary = EXCLUDED.current_salary,
+			expected_salary = EXCLUDED.expected_salary, expected_salary_inr = EXCLUDED.expected_salary_inr,
+			hourly_rate = EXCLUDED.hourly_rate, work_types = EXCLUDED.work_types, location_ids = EXCLUDED.location_ids,
+			designation_ids = EXCLUDED.designation_ids, open_to_remote = EXCLUDED.open_to_remote,
+			relocation = EXCLUDED.relocation, is_public = EXCLUDED.is_public, open_to_work = EXCLUDED.open_to_work,
+			hide_current_salary = EXCLUDED.hide_current_salary, hide_hourly_rate = EXCLUDED.hide_hourly_rate,
+			hide_contact = EXCLUDED.hide_contact, hide_expected_salary = EXCLUDED.hide_expected_salary,
+			resume_applications_only = EXCLUDED.resume_applications_only, details = EXCLUDED.details,
+			website = EXCLUDED.website, work_mode = EXCLUDED.work_mode, updated_at = NOW()`,
+		userID, p.Slug, p.Name, p.Title, p.Location, p.About, p.Gender, p.Pronouns, p.Email, p.Phone,
+		p.ExperienceYears, p.Notice, p.IsServingNotice, lastDay, p.SalaryCurrency, p.CurrentSalary, p.ExpectedSalary,
+		rate, p.HourlyRate, p.WorkTypes, p.PreferredLocations, designationIDs, p.OpenToRemote, p.Relocation,
+		p.Visible, p.Open, p.CurrentSalaryPrivate, p.HourlyPrivate, p.ContactPrivate, p.SalaryPrivate,
+		p.ResumePrivate, details, p.Website, p.WorkMode)
+	if isUniqueViolation(err) {
+		return profiles.ErrSlugTaken
+	}
+	if err != nil {
+		return err
+	}
+
+	ids, groups := make([]int64, len(skills)), make([]string, len(skills))
+	for i, s := range skills {
+		ids[i], groups[i] = s.SkillID, s.Group
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM profile_skills WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO profile_skills (user_id, skill_id, group_name, position)
+		SELECT $1, id, g, ord FROM unnest($2::bigint[], $3::text[]) WITH ORDINALITY AS u(id, g, ord)`,
+		userID, ids, groups); err != nil {
+		return err
+	}
+
+	n := len(p.Experiences)
+	company, title, kind, start, end, desc := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]*string, n), make([]string, n)
+	current, promoted := make([]bool, n), make([]bool, n)
+	for i, e := range p.Experiences {
+		company[i], title[i], kind[i], start[i], desc[i] = e.Company, e.Title, e.Type, e.Start, e.Description
+		current[i], promoted[i] = e.Current, e.Promoted
+		if e.End != "" {
+			end[i] = &e.End
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM profile_experiences WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	// A company name that matches a registered company links to it, so the
+	// company can verify the entry (oldest company wins a name clash).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO profile_experiences (user_id, position, company_id, company_name, title, work_type, start_month,
+			end_month, is_current, promoted, description)
+		SELECT $1, ord, (SELECT c.id FROM companies c WHERE lower(c.name) = lower(u.company) AND c.deleted_at IS NULL
+				ORDER BY c.created_at, c.id LIMIT 1),
+			company, title, kind, start, finish, cur, prom, descr
+		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bool[], $8::bool[], $9::text[])
+			WITH ORDINALITY AS u(company, title, kind, start, finish, cur, prom, descr, ord)`,
+		userID, company, title, kind, start, end, current, promoted, desc); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
-func (r *ProfileRepository) ListPronouns(ctx context.Context, id int64) ([]string, error) {
-	return queryAll(ctx, r.pool, scanString,
-		`SELECT pronoun FROM candidate_pronouns WHERE candidate_id = $1 ORDER BY pronoun`, id)
-}
-
-func (r *ProfileRepository) ReplacePronouns(ctx context.Context, id int64, pronouns []string) error {
-	return replaceSet(ctx, r.pool,
-		`DELETE FROM candidate_pronouns WHERE candidate_id = $1`,
-		`INSERT INTO candidate_pronouns (candidate_id, pronoun) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		id, pronouns)
-}
-
-func (r *ProfileRepository) ListSocial(ctx context.Context, candidateID int64) ([]models.SocialHandle, error) {
-	return queryAll(ctx, r.pool, func(rs pgx.Rows) (models.SocialHandle, error) {
-		var h models.SocialHandle
-		err := rs.Scan(&h.ID, &h.Platform, &h.URL, &h.ClickCount)
-		return h, err
-	}, `SELECT id, platform, url, click_count FROM candidate_social_handles WHERE candidate_id = $1 ORDER BY id`, candidateID)
-}
-
-func (r *ProfileRepository) CreateSocial(ctx context.Context, h models.SocialHandle) (int64, error) {
-	var id int64
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO candidate_social_handles (candidate_id, platform, url) VALUES ($1, $2, $3) RETURNING id`,
-		h.CandidateID, h.Platform, h.URL).Scan(&id)
-	return id, translate(err)
-}
-
-func (r *ProfileRepository) UpdateSocial(ctx context.Context, h models.SocialHandle) error {
-	res, err := r.pool.Exec(ctx,
-		`UPDATE candidate_social_handles SET platform = $3, url = $4 WHERE id = $1 AND candidate_id = $2`,
-		h.ID, h.CandidateID, h.Platform, h.URL)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) DeleteSocial(ctx context.Context, id, candidateID int64) error {
-	res, err := r.pool.Exec(ctx,
-		`DELETE FROM candidate_social_handles WHERE id = $1 AND candidate_id = $2`, id, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) IncrementClickSocial(ctx context.Context, slug, platform string) error {
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidate_social_handles h SET click_count = h.click_count + 1
-		FROM candidates c
-		WHERE c.candidate_id = h.candidate_id AND c.profile_slug = $1 AND c.status = 'active' AND h.platform = $2`,
-		slug, platform)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) GetSalary(ctx context.Context, candidateID int64) (*models.Salary, error) {
-	s := models.Salary{CandidateID: candidateID}
+func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (string, error) {
+	var old *string
 	err := r.pool.QueryRow(ctx, `
-		SELECT current_amount::float8, current_currency, current_is_hidden,
-		       expected_amount::float8, expected_currency
-		FROM candidate_salary WHERE candidate_id = $1`, candidateID).
-		Scan(&s.CurrentAmount, &s.CurrentCurrency, &s.CurrentIsHidden, &s.ExpectedAmount, &s.ExpectedCurrency)
-	if err != nil {
-		return nil, translate(err)
+		UPDATE profiles p SET photo_key = $2, updated_at = NOW() FROM profiles prev
+		WHERE p.user_id = $1 AND prev.user_id = p.user_id RETURNING prev.photo_key`, userID, key).Scan(&old)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", profiles.ErrNotFound
 	}
-	return &s, nil
-}
-
-func (r *ProfileRepository) UpsertSalary(ctx context.Context, s models.Salary) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO candidate_salary (candidate_id,
-		    current_amount, current_currency, current_amount_inr, current_is_hidden,
-		    expected_amount, expected_currency, expected_amount_inr, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-		ON CONFLICT (candidate_id) DO UPDATE SET
-		    current_amount      = EXCLUDED.current_amount,
-		    current_currency    = EXCLUDED.current_currency,
-		    current_amount_inr  = EXCLUDED.current_amount_inr,
-		    current_is_hidden   = EXCLUDED.current_is_hidden,
-		    expected_amount     = EXCLUDED.expected_amount,
-		    expected_currency   = EXCLUDED.expected_currency,
-		    expected_amount_inr = EXCLUDED.expected_amount_inr,
-		    updated_at          = now()`,
-		s.CandidateID, s.CurrentAmount, s.CurrentCurrency, s.CurrentAmountINR, s.CurrentIsHidden,
-		s.ExpectedAmount, s.ExpectedCurrency, s.ExpectedAmountINR)
-	return translate(err)
-}
-
-func (r *ProfileRepository) DeleteSalary(ctx context.Context, candidateID int64) error {
-	res, err := r.pool.Exec(ctx, `DELETE FROM candidate_salary WHERE candidate_id = $1`, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) GetPreference(ctx context.Context, id int64) (*models.Preferences, error) {
-	p := &models.Preferences{}
-
-	err := r.pool.QueryRow(ctx,
-		`SELECT open_to_remote FROM candidate_preferences WHERE candidate_id = $1`, id).Scan(&p.OpenToRemote)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) { // no row yet == defaults
-		return nil, translate(err)
+	if err != nil || old == nil {
+		return "", err
 	}
-
-	var qerr error
-	if p.WorkTypes, qerr = queryAll(ctx, r.pool, scanString,
-		`SELECT work_type FROM candidate_work_types WHERE candidate_id = $1 ORDER BY work_type`, id); qerr != nil {
-		return nil, qerr
-	}
-	if p.TargetRoles, qerr = queryAll(ctx, r.pool, func(rs pgx.Rows) (models.TargetRole, error) {
-		var t models.TargetRole
-		err := rs.Scan(&t.DesignationID, &t.Name)
-		return t, err
-	}, `SELECT d.designation_id, d.name
-	    FROM candidate_target_roles tr JOIN master_designations d ON d.designation_id = tr.designation_id
-	    WHERE tr.candidate_id = $1 ORDER BY d.name`, id); qerr != nil {
-		return nil, qerr
-	}
-	if p.TargetLocations, qerr = queryAll(ctx, r.pool, func(rs pgx.Rows) (models.TargetLocation, error) {
-		var t models.TargetLocation
-		err := rs.Scan(&t.LocationID, &t.Name, &t.Level)
-		return t, err
-	}, `SELECT l.location_id, l.name, l.level
-	    FROM candidate_target_locations tl JOIN master_locations l ON l.location_id = tl.location_id
-	    WHERE tl.candidate_id = $1 ORDER BY l.name`, id); qerr != nil {
-		return nil, qerr
-	}
-	return p, nil
+	return *old, nil
 }
 
-func (r *ProfileRepository) UpsertPreference(ctx context.Context, id int64, openToRemote bool, workTypes []string) error {
-	return inTx(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO candidate_preferences (candidate_id, open_to_remote) VALUES ($1, $2)
-			ON CONFLICT (candidate_id) DO UPDATE SET open_to_remote = EXCLUDED.open_to_remote`,
-			id, openToRemote); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM candidate_work_types WHERE candidate_id = $1`, id); err != nil {
-			return err
-		}
-		for _, wt := range workTypes {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO candidate_work_types (candidate_id, work_type) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-				id, wt); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (r *ProfileRepository) ReplaceTargetRoles(ctx context.Context, id int64, ids []int64) error {
-	return replaceSet(ctx, r.pool,
-		`DELETE FROM candidate_target_roles WHERE candidate_id = $1`,
-		`INSERT INTO candidate_target_roles (candidate_id, designation_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		id, ids)
-}
-
-func (r *ProfileRepository) ReplaceTargetLocations(ctx context.Context, id int64, ids []int64) error {
-	return replaceSet(ctx, r.pool,
-		`DELETE FROM candidate_target_locations WHERE candidate_id = $1`,
-		`INSERT INTO candidate_target_locations (candidate_id, location_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-		id, ids)
-}
-
-func (r *ProfileRepository) ListTimeline(ctx context.Context, candidateID int64) ([]models.TimelineEntry, error) {
-	return queryAll(ctx, r.pool, func(rs pgx.Rows) (models.TimelineEntry, error) {
-		var (
-			e         models.TimelineEntry
-			companyID *int64
-			compName  *string
-			rawName   *string
-		)
-		if err := rs.Scan(&e.TimelineID, &companyID, &compName, &rawName, &e.DesignationTitle,
-			&e.StartDate, &e.EndDate, &e.IsCurrent, &e.Description, &e.VerificationStatus); err != nil {
-			return e, err
-		}
-		switch {
-		case companyID != nil && compName != nil:
-			e.Company = &models.CompanyRef{CompanyID: companyID, Name: *compName}
-		case rawName != nil:
-			e.Company = &models.CompanyRef{Name: *rawName}
-		}
-		return e, nil
-	}, `
-		SELECT t.timeline_id, t.company_id, mc.name, t.company_name_raw, t.designation_title,
-		       to_char(t.start_date, 'YYYY-MM-DD'), to_char(t.end_date, 'YYYY-MM-DD'),
-		       t.is_current, t.description, t.verification_status
-		FROM candidate_timeline t
-		LEFT JOIN master_companies mc ON mc.company_id = t.company_id
-		WHERE t.candidate_id = $1
-		ORDER BY t.is_current DESC, t.start_date DESC, t.timeline_id DESC`, candidateID)
-}
-
-func (r *ProfileRepository) CreateTimeline(ctx context.Context, t models.Timeline) (int64, error) {
-	var id int64
+func (r *ProfileRepository) Experience(ctx context.Context, userID string, index int) (string, string, string, error) {
+	var companyID *string
+	var title, start string
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO candidate_timeline (candidate_id, company_id, company_name_raw, designation_title,
-		                                start_date, end_date, is_current, description)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING timeline_id`,
-		t.CandidateID, t.CompanyID, t.CompanyNameRaw, t.DesignationTitle,
-		t.StartDate, t.EndDate, t.IsCurrent, t.Description).Scan(&id)
-	return id, translate(err)
-}
-
-func (r *ProfileRepository) UpdateTimeline(ctx context.Context, t models.Timeline) error {
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidate_timeline SET
-		  company_id = $3, company_name_raw = $4, designation_title = $5,
-		  start_date = $6, end_date = $7, is_current = $8, description = $9,
-		  verification_status = 'UNVERIFIED', verified_at = NULL, verified_by_user_id = NULL, rejected_at = NULL,
-		  updated_at = now()
-		WHERE timeline_id = $1 AND candidate_id = $2`,
-		t.TimelineID, t.CandidateID, t.CompanyID, t.CompanyNameRaw, t.DesignationTitle,
-		t.StartDate, t.EndDate, t.IsCurrent, t.Description)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) DeleteTimeline(ctx context.Context, id, candidateID int64) error {
-	res, err := r.pool.Exec(ctx,
-		`DELETE FROM candidate_timeline WHERE timeline_id = $1 AND candidate_id = $2`, id, candidateID)
-	return affected(res, err)
-}
-
-// Only roles at a registered company can be sent for verification.
-func (r *ProfileRepository) RequestTimelineVerification(ctx context.Context, id, candidateID int64) error {
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidate_timeline
-		SET verification_status = 'PENDING_VERIFICATION', rejected_at = NULL, updated_at = now()
-		WHERE timeline_id = $1 AND candidate_id = $2
-		  AND company_id IS NOT NULL
-		  AND verification_status IN ('UNVERIFIED', 'REJECTED')`, id, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) ReviewTimeline(ctx context.Context, id int64, approve bool, adminUserID int64) error {
-	if approve {
-		res, err := r.pool.Exec(ctx, `
-			UPDATE candidate_timeline
-			SET verification_status = 'VERIFIED', verified_at = now(), verified_by_user_id = $2,
-			    rejected_at = NULL, updated_at = now()
-			WHERE timeline_id = $1 AND verification_status = 'PENDING_VERIFICATION'`, id, adminUserID)
-		return affected(res, err)
+		SELECT c.id, e.title, e.start_month FROM profile_experiences e
+		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
+		WHERE e.user_id = $1 AND e.position = $2`, userID, index+1).Scan(&companyID, &title, &start)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", &profiles.NotFoundError{Message: "experience not found"}
 	}
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidate_timeline
-		SET verification_status = 'REJECTED', rejected_at = now(), updated_at = now()
-		WHERE timeline_id = $1 AND verification_status = 'PENDING_VERIFICATION'`, id)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) ListSkillGroups(ctx context.Context, candidateID int64) ([]models.SkillGroup, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT g.group_id, g.group_name, g.display_order, i.skill_id, s.name, i.display_order
-		FROM candidate_skill_groups g
-		LEFT JOIN candidate_skill_group_items i ON i.group_id = g.group_id
-		LEFT JOIN master_skills s ON s.skill_id = i.skill_id
-		WHERE g.candidate_id = $1
-		ORDER BY g.display_order, g.group_id, i.display_order, i.id`, candidateID)
-	if err != nil {
-		return nil, translate(err)
+	if err != nil || companyID == nil {
+		return "", title, start, err
 	}
-	defer rows.Close()
-
-	groups := make([]models.SkillGroup, 0)
-	pos := map[int64]int{} // group_id -> index in groups
-	for rows.Next() {
-		var (
-			gid     int64
-			gname   string
-			gorder  int
-			skillID *int64
-			sname   *string
-			iorder  *int
-		)
-		if err := rows.Scan(&gid, &gname, &gorder, &skillID, &sname, &iorder); err != nil {
-			return nil, translate(err)
-		}
-		idx, ok := pos[gid]
-		if !ok {
-			groups = append(groups, models.SkillGroup{
-				GroupID: gid, GroupName: gname, DisplayOrder: gorder, Skills: []models.SkillChip{},
-			})
-			idx = len(groups) - 1
-			pos[gid] = idx
-		}
-		if skillID != nil && sname != nil && iorder != nil {
-			groups[idx].Skills = append(groups[idx].Skills,
-				models.SkillChip{SkillID: *skillID, Name: *sname, DisplayOrder: *iorder})
-		}
-	}
-	return groups, translate(rows.Err())
-}
-
-func (r *ProfileRepository) CreateSkillGroup(ctx context.Context, candidateID int64, name string, order int) (int64, error) {
-	var id int64
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO candidate_skill_groups (candidate_id, group_name, display_order) VALUES ($1, $2, $3) RETURNING group_id`,
-		candidateID, name, order).Scan(&id)
-	return id, translate(err)
-}
-
-func (r *ProfileRepository) UpdateSkillGroup(ctx context.Context, groupID, candidateID int64, name string, order int) error {
-	res, err := r.pool.Exec(ctx,
-		`UPDATE candidate_skill_groups SET group_name = $3, display_order = $4 WHERE group_id = $1 AND candidate_id = $2`,
-		groupID, candidateID, name, order)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) DeleteSkillGroup(ctx context.Context, groupID, candidateID int64) error {
-	res, err := r.pool.Exec(ctx,
-		`DELETE FROM candidate_skill_groups WHERE group_id = $1 AND candidate_id = $2`, groupID, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) OwnsGroup(ctx context.Context, groupID, candidateID int64) (bool, error) {
-	var one int
-	err := r.pool.QueryRow(ctx,
-		`SELECT 1 FROM candidate_skill_groups WHERE group_id = $1 AND candidate_id = $2`, groupID, candidateID).Scan(&one)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	return err == nil, translate(err)
-}
-
-func (r *ProfileRepository) AddSkill(ctx context.Context, groupID, skillID int64, order int) (int64, error) {
-	var id int64
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO candidate_skill_group_items (group_id, skill_id, display_order) VALUES ($1, $2, $3) RETURNING id`,
-		groupID, skillID, order).Scan(&id)
-	return id, translate(err)
-}
-
-func (r *ProfileRepository) UpdateSkill(ctx context.Context, groupID, skillID, candidateID int64, order int) error {
-	res, err := r.pool.Exec(ctx, `
-		UPDATE candidate_skill_group_items i SET display_order = $4
-		FROM candidate_skill_groups g
-		WHERE g.group_id = i.group_id AND g.candidate_id = $3 AND i.group_id = $1 AND i.skill_id = $2`,
-		groupID, skillID, candidateID, order)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) RemoveSkill(ctx context.Context, groupID, skillID, candidateID int64) error {
-	res, err := r.pool.Exec(ctx, `
-		DELETE FROM candidate_skill_group_items i USING candidate_skill_groups g
-		WHERE g.group_id = i.group_id AND g.candidate_id = $3 AND i.group_id = $1 AND i.skill_id = $2`,
-		groupID, skillID, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) GetContact(ctx context.Context, candidateID int64) (*models.ContactS, error) {
-	c := models.ContactS{CandidateID: candidateID}
-	err := r.pool.QueryRow(ctx,
-		`SELECT email, phone_number, primary_location_id FROM candidate_contact WHERE candidate_id = $1`, candidateID).
-		Scan(&c.Email, &c.PhoneNumber, &c.PrimaryLocationID)
-	if err != nil {
-		return nil, translate(err)
-	}
-	return &c, nil
-}
-
-func (r *ProfileRepository) UpsertContact(ctx context.Context, c models.ContactS) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO candidate_contact (candidate_id, email, phone_number, primary_location_id)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (candidate_id) DO UPDATE SET
-		    email = EXCLUDED.email,
-		    phone_number = EXCLUDED.phone_number,
-		    primary_location_id = EXCLUDED.primary_location_id`,
-		c.CandidateID, c.Email, c.PhoneNumber, c.PrimaryLocationID)
-	return translate(err)
-}
-
-func (r *ProfileRepository) GetResume(ctx context.Context, candidateID int64) (*models.ResumeS, error) {
-	x := models.ResumeS{CandidateID: candidateID}
-	err := r.pool.QueryRow(ctx, `
-		SELECT file_url, file_size_bytes, access_control, public_short_link, uploaded_at
-		FROM candidate_resume WHERE candidate_id = $1`, candidateID).
-		Scan(&x.FileURL, &x.FileSizeBytes, &x.AccessControl, &x.PublicShortLink, &x.UploadedAt)
-	if err != nil {
-		return nil, translate(err)
-	}
-	return &x, nil
-}
-
-func (r *ProfileRepository) UpsertResume(ctx context.Context, x models.ResumeS) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO candidate_resume (candidate_id, file_url, file_size_bytes, access_control, public_short_link, uploaded_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (candidate_id) DO UPDATE SET
-		    file_url = EXCLUDED.file_url,
-		    file_size_bytes = EXCLUDED.file_size_bytes,
-		    access_control = EXCLUDED.access_control,
-		    public_short_link = EXCLUDED.public_short_link,
-		    uploaded_at = now()`,
-		x.CandidateID, x.FileURL, x.FileSizeBytes, x.AccessControl, x.PublicShortLink)
-	return translate(err) // short link already taken -> 409
-}
-
-func (r *ProfileRepository) DeleteResume(ctx context.Context, candidateID int64) error {
-	res, err := r.pool.Exec(ctx, `DELETE FROM candidate_resume WHERE candidate_id = $1`, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) ListResumeGrants(ctx context.Context, candidateID int64) ([]models.ResumeGrant, error) {
-	return queryAll(ctx, r.pool, func(rs pgx.Rows) (models.ResumeGrant, error) {
-		var g models.ResumeGrant
-		err := rs.Scan(&g.ID, &g.RecruiterID, &g.JobPostingID, &g.GrantedAt)
-		return g, err
-	}, `SELECT id, recruiter_id, job_posting_id, granted_at
-	    FROM resume_access_grants WHERE candidate_id = $1 ORDER BY granted_at DESC`, candidateID)
-}
-
-func (r *ProfileRepository) RevokeResumeGrant(ctx context.Context, id, candidateID int64) error {
-	res, err := r.pool.Exec(ctx,
-		`DELETE FROM resume_access_grants WHERE id = $1 AND candidate_id = $2`, id, candidateID)
-	return affected(res, err)
-}
-
-func (r *ProfileRepository) CreateResumeGrant(ctx context.Context, g models.ResumeGrant) error {
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO resume_access_grants (candidate_id, recruiter_id, job_posting_id)
-		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, g.CandidateID, g.RecruiterID, g.JobPostingID)
-	return translate(err)
+	return *companyID, title, start, nil
 }

@@ -16,8 +16,7 @@ import (
 	appauth "findJobs/internal/application/auth"
 	appcompanies "findJobs/internal/application/companies"
 	appjobs "findJobs/internal/application/jobs"
-	"findJobs/internal/application/masters"
-	"findJobs/internal/application/profiles"
+	appprofiles "findJobs/internal/application/profiles"
 	appreference "findJobs/internal/application/reference"
 	appsettings "findJobs/internal/application/settings"
 	"findJobs/internal/pkg/config"
@@ -37,7 +36,7 @@ const (
 )
 
 func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
-	gin.SetMode(gin.ReleaseMode)
+	gin.SetMode(gin.DebugMode) // TODO Change to ReleaseMode for prod
 	router := gin.Default()
 	// Gin trusts every proxy by default, which would let any client spoof
 	// X-Forwarded-For and dodge the rate limiter. Trust only configured ones.
@@ -91,20 +90,9 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 	companyService := appcompanies.NewCompanyService(postgres.NewCompanyRepository(db), store)
 	inbound.RegisterCompanyRoutes(api, inbound.NewCompanyHandler(companyService), authHandler.OptionalUser(), authHandler.RequireUser())
 
-	// Masters routes
-	masterRepo := postgres.NewMasterRepository(db)
-	masterService := masters.NewMasterService(masterRepo)
-	masterHandler := inbound.NewMastersHandler(masterService)
-	masterGroup := api.Group("/admin")
-	inbound.RegisterMastersRoutes(masterGroup, masterHandler)
-
-	// Profile routes
-	// 	/* USERS */
-	profileRepo := postgres.NewProfileRepository(db)
-	profileService := profiles.NewProfileService(profileRepo)
-	profileHandler := inbound.NewHandler(profileService)
-	profileGroup := api.Group("/profile")
-	inbound.RegisterRoutes(profileGroup, profileHandler)
+	// Candidate profiles: shared taxonomy terms, company verification, photo uploads
+	profileService := appprofiles.NewProfileService(postgres.NewProfileRepository(db), referenceService, companyService, store)
+	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService), authHandler.RequireUser())
 	return router, nil
 }
 

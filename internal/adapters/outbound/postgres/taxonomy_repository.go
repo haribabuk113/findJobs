@@ -211,21 +211,44 @@ func (r *TaxonomyRepository) Delete(ctx context.Context, kind reference.Kind, id
 	return tx.Commit(ctx)
 }
 
-// repointJobs replaces term ids in jobs with master (merge), or removes them
-// when master is nil (delete).
+// repointJobs replaces term ids in jobs and profiles with master (merge), or
+// removes them when master is nil (delete).
 func repointJobs(ctx context.Context, tx pgx.Tx, kind reference.Kind, ids []int64, master *int64) error {
 	if kind == reference.Designation {
-		_, err := tx.Exec(ctx, `UPDATE jobs SET designation_id = $2, updated_at = NOW() WHERE designation_id = ANY($1)`, ids, master)
+		if _, err := tx.Exec(ctx, `UPDATE jobs SET designation_id = $2, updated_at = NOW() WHERE designation_id = ANY($1)`, ids, master); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE profiles SET updated_at = NOW(), designation_ids = `+repointArray("designation_ids")+`
+			WHERE designation_ids && $1`, ids, master)
 		return err
 	}
-	_, err := tx.Exec(ctx, `
-		UPDATE jobs SET updated_at = NOW(), skill_ids = ARRAY(
-			SELECT v FROM (
-				SELECT CASE WHEN u.id = ANY($1) THEN $2::bigint ELSE u.id END AS v, MIN(u.ord) AS first
-				FROM unnest(skill_ids) WITH ORDINALITY AS u(id, ord) GROUP BY 1
-			) kept WHERE v IS NOT NULL ORDER BY first)
-		WHERE skill_ids && $1`, ids, master)
+	if _, err := tx.Exec(ctx, `UPDATE jobs SET updated_at = NOW(), skill_ids = `+repointArray("skill_ids")+`
+		WHERE skill_ids && $1`, ids, master); err != nil {
+		return err
+	}
+	if master == nil {
+		return nil // profile_skills rows go with the deleted terms (ON DELETE CASCADE)
+	}
+	// A profile keeps one row per skill: drop an alias when the profile already
+	// has the master or an earlier alias, then rename the rest.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM profile_skills p USING profile_skills q
+		WHERE p.skill_id = ANY($1) AND q.user_id = p.user_id
+			AND (q.skill_id = $2 OR (q.skill_id = ANY($1) AND q.position < p.position))`, ids, *master); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE profile_skills SET skill_id = $2 WHERE skill_id = ANY($1)`, ids, *master)
 	return err
+}
+
+// repointArray rewrites an ordered id array: ids in $1 become $2 (or are
+// dropped when $2 is null), duplicates collapse to their first position.
+func repointArray(column string) string {
+	return `ARRAY(
+		SELECT v FROM (
+			SELECT CASE WHEN u.id = ANY($1) THEN $2::bigint ELSE u.id END AS v, MIN(u.ord) AS first
+			FROM unnest(` + column + `) WITH ORDINALITY AS u(id, ord) GROUP BY 1
+		) kept WHERE v IS NOT NULL ORDER BY first)`
 }
 
 func (r *TaxonomyRepository) Export(ctx context.Context, kind reference.Kind) ([]reference.Term, error) {

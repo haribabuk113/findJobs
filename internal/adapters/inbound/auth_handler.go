@@ -59,7 +59,7 @@ func (h *AuthHandler) CreateSession(ctx *gin.Context) {
 		return
 	}
 
-	h.setCookie(ctx, sessionID, 30*24*3600)
+	h.setCookie(ctx, sessionID, 1*24*3600) // D*H*S
 	ctx.JSON(http.StatusOK, adapters.BuildResponse("Session created successfully", result, nil))
 }
 

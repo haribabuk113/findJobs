@@ -1,637 +1,528 @@
+// Package profiles holds the candidate profile document and its rules.
 package profiles
 
-import "time"
+import (
+	"fmt"
+	"net/mail"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
-// // Profile represents a user profile in the domain
-// type Profile struct {
-// 	ID        int64  `json:"id"`
-// 	Email     string `json:"email"`
-// 	FirstName string `json:"first_name"`
-// 	LastName  string `json:"last_name"`
-// 	CreatedAt int64  `json:"created_at"`
-// 	UpdatedAt int64  `json:"updated_at"`
-// }
+	"findJobs/internal/domain/jobs"
+)
 
-// // ProfileDetails represents the full profile details returned to clients
-// type ProfileDetails struct {
-// 	Profile
-// 	Bio         string   `json:"bio,omitempty"`
-// 	Skills      []string `json:"skills,omitempty"`
-// 	Designation string   `json:"designation,omitempty"`
-// 	Location    string   `json:"location,omitempty"`
-// 	AvatarURL   string   `json:"avatar_url,omitempty"`
-// }
+// Profile is the candidate's profile document (GET/PUT /profile/me). Field
+// names match the frontend's profile store. Skills and target roles are
+// taxonomy names (resolved to shared term ids on save); preferred locations
+// are GeoNames ids.
+type Profile struct {
+	Saved        bool       `json:"saved"`         // read-only: false for a starter profile not yet stored
+	Photo        *string    `json:"photo"`         // read-only: set with PUT /profile/me/photo
+	AboutUpdated *time.Time `json:"about_updated"` // read-only
 
-// // ProfileRequest represents the request payload for profile operations
-// type ProfileRequest struct {
-// 	FirstName   string   `json:"first_name"`
-// 	LastName    string   `json:"last_name"`
-// 	Bio         string   `json:"bio,omitempty"`
-// 	Skills      []string `json:"skills,omitempty"`
-// 	Designation string   `json:"designation,omitempty"`
-// 	Location    string   `json:"location,omitempty"`
-// 	AvatarURL   string   `json:"avatar_url,omitempty"`
-// }
+	Slug     string `json:"slug"`
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	Location string `json:"location"`
+	Website  string `json:"website"` // portfolio display name, e.g. "asha.design"
+	About    string `json:"about"`
+	Gender   string `json:"gender"`
+	Pronouns string `json:"pronouns"`
+	Email    string `json:"email"`
+	Phone    string `json:"phone"`
 
-// // Validate validates the profile request
-// func (r *ProfileRequest) Validate() error {
-// 	if r.FirstName == "" {
-// 		return ErrFirstNameRequired
-// 	}
-// 	if r.LastName == "" {
-// 		return ErrLastNameRequired
-// 	}
-// 	return nil
-// }
+	ExperienceYears int    `json:"experience_years"`
+	Notice          string `json:"notice"`
+	IsServingNotice bool   `json:"is_serving_notice"`
+	LastWorkingDate string `json:"last_working_date"` // YYYY-MM-DD or ""
 
-// // ProfileRequest represents the request payload for profile operations
-// type ProfilePhotoResponse struct {
-// 	AvatarURL string `json:"avatar_url,omitempty"`
-// }
+	SalaryCurrency string  `json:"salary_currency"`
+	CurrentSalary  float64 `json:"current_salary"`
+	ExpectedSalary float64 `json:"expected_salary"`
+	HourlyRate     float64 `json:"hourly_rate"`
 
-// // ---------- GET /profile/{slug} response ----------
+	WorkTypes          []string `json:"work_types"`
+	PreferredLocations []string `json:"preferred_locations"`
+	TargetRoles        []string `json:"target_roles"`
+	OpenToRemote       bool     `json:"open_to_remote"`
+	WorkMode           string   `json:"work_mode"`
+	Relocation         string   `json:"relocation"`
 
-// type ProfileResponse struct {
-// 	CandidateID       int64               `json:"candidate_id"`
-// 	FullName          string              `json:"full_name"`
-// 	ProfileSlug       string              `json:"profile_slug"`
-// 	ProfilePhotoURL   *string             `json:"profile_photo_url"`
-// 	Gender            *string             `json:"gender"`
-// 	Pronouns          []string            `json:"pronouns"`
-// 	Headline          *Headline           `json:"headline"`
-// 	AboutSummary      *AboutSummary       `json:"about_summary"`
-// 	SocialHandles     []SocialHandle      `json:"social_handles"`
-// 	Salary            Salary              `json:"salary"`
-// 	Preferences       Preferences         `json:"preferences"`
-// 	Timeline          []TimelineEntry     `json:"timeline"`
-// 	SkillGroups       []SkillGroup        `json:"skill_groups"`
-// 	Contact           Contact             `json:"contact"`
-// 	Resume            *Resume             `json:"resume"`
-// 	WorkAuthorization []WorkAuthorization `json:"work_authorization"`
-// }
+	Visible              bool `json:"visible"`
+	Open                 bool `json:"open"`
+	CurrentSalaryPrivate bool `json:"current_salary_private"`
+	HourlyPrivate        bool `json:"hourly_private"`
+	ContactPrivate       bool `json:"contact_private"`
+	SalaryPrivate        bool `json:"salary_private"`
+	ResumePrivate        bool `json:"resume_private"`
 
-// type Headline struct {
-// 	Text          *string `json:"text"`
-// 	DesignationID *int64  `json:"designation_id"`
-// }
+	SkillGroups []SkillGroup `json:"skill_groups"`
+	Skills      []string     `json:"skills"` // read-only on save: every skill, in display order
 
-// type AboutSummary struct {
-// 	Text      string     `json:"text"`
-// 	UpdatedAt *time.Time `json:"updated_at"`
-// }
-
-// type SocialHandle struct {
-// 	Platform string `json:"platform"`
-// 	URL      string `json:"url"`
-// }
-
-// type Salary struct {
-// 	Current  SalaryCurrent `json:"current"`
-// 	Expected *SalaryAmount `json:"expected"` // null when not set
-// }
-
-// // When is_hidden=true, amount/currency are omitted entirely.
-// type SalaryCurrent struct {
-// 	IsHidden bool     `json:"is_hidden"`
-// 	Amount   *float64 `json:"amount,omitempty"`
-// 	Currency *string  `json:"currency,omitempty"`
-// }
-
-// type SalaryAmount struct {
-// 	Amount   float64 `json:"amount"`
-// 	Currency string  `json:"currency"`
-// }
-
-// type Preferences struct {
-// 	TargetRoles     []TargetRole     `json:"target_roles"`
-// 	TargetLocations []TargetLocation `json:"target_locations"`
-// 	OpenToRemote    bool             `json:"open_to_remote"`
-// 	WorkTypes       []string         `json:"work_types"`
-// }
-
-// type TargetRole struct {
-// 	DesignationID int64  `json:"designation_id"`
-// 	Name          string `json:"name"`
-// }
-
-// type TargetLocation struct {
-// 	LocationID int64  `json:"location_id"`
-// 	Name       string `json:"name"`
-// 	Level      string `json:"level"`
-// }
-
-// type TimelineEntry struct {
-// 	TimelineID         int64            `json:"timeline_id"`
-// 	Company            *TimelineCompany `json:"company"`
-// 	DesignationTitle   string           `json:"designation_title"`
-// 	StartDate          string           `json:"start_date"`
-// 	EndDate            *string          `json:"end_date"`
-// 	IsCurrent          bool             `json:"is_current"`
-// 	Description        *string          `json:"description"`
-// 	VerificationStatus string           `json:"verification_status"`
-// }
-
-// // CompanyID is null when the company is not registered (free-text name only).
-// type TimelineCompany struct {
-// 	CompanyID *int64 `json:"company_id"`
-// 	Name      string `json:"name"`
-// }
-
-// type SkillGroup struct {
-// 	GroupID      int64       `json:"group_id"`
-// 	GroupName    string      `json:"group_name"`
-// 	DisplayOrder int         `json:"display_order"`
-// 	Skills       []SkillChip `json:"skills"`
-// }
-
-// type SkillChip struct {
-// 	SkillID      int64  `json:"skill_id"`
-// 	Name         string `json:"name"`
-// 	DisplayOrder int    `json:"display_order"`
-// }
-
-// type Contact struct {
-// 	Email           string       `json:"email"`
-// 	PhoneNumber     *string      `json:"phone_number"`
-// 	PrimaryLocation *LocationRef `json:"primary_location"`
-// }
-
-// type LocationRef struct {
-// 	LocationID int64  `json:"location_id"`
-// 	Name       string `json:"name"`
-// }
-
-// type Resume struct {
-// 	AccessControl   string  `json:"access_control"`
-// 	ViewURL         *string `json:"view_url,omitempty"`
-// 	PublicShortLink *string `json:"public_short_link,omitempty"`
-// }
-
-// type WorkAuthorization struct {
-// 	Country           string  `json:"country"`
-// 	AuthorizationType string  `json:"authorization_type"`
-// 	ValidFrom         *string `json:"valid_from"`
-// 	ValidUntil        *string `json:"valid_until"`
-// 	IsIndefinite      bool    `json:"is_indefinite"`
-// }
-
-type ProfileResponse struct {
-	CandidateID     int64                 `json:"candidate_id"`
-	FullName        string                `json:"full_name"`
-	ProfileSlug     string                `json:"profile_slug"`
-	ProfilePhotoURL *string               `json:"profile_photo_url"`
-	Gender          *string               `json:"gender"`
-	Pronouns        []string              `json:"pronouns"`
-	Headline        *Headline             `json:"headline"`
-	AboutSummary    *AboutSummary         `json:"about_summary"`
-	SocialHandles   []ProfileSocialHandle `json:"social_handles"`
-	Salary          SalaryS               `json:"salary"`
-	Preferences     PreferencesS          `json:"preferences"`
-	Timeline        []TimelineItem        `json:"timeline"`
-	SkillGroups     []SkillGroup          `json:"skill_groups"`
-	Contact         Contact               `json:"contact"`
-	Resume          *Resume               `json:"resume"`
-	// WorkAuthorization []WorkAuthorization   `json:"work_authorization"`
+	Experiences []Experience `json:"experiences"`
+	Details
 }
 
-type Headline struct {
-	Text          *string `json:"text"`
-	DesignationID *int64  `json:"designation_id"`
+// Details are small owner-edited lists stored together as JSON.
+type Details struct {
+	SocialLinks    []SocialLink    `json:"social_links"`
+	Languages      []Language      `json:"languages"`
+	Education      []Education     `json:"education"`
+	Authorizations []Authorization `json:"authorizations"`
 }
 
-type AboutSummary struct {
-	Text      string     `json:"text"`
-	UpdatedAt *time.Time `json:"updated_at"`
+type SkillGroup struct {
+	Name   string   `json:"name"`
+	Skills []string `json:"skills"`
 }
 
-type ProfileSocialHandle struct {
+type SocialLink struct {
 	Platform string `json:"platform"`
 	URL      string `json:"url"`
 }
 
-type SalaryS struct {
-	Current  SalaryCurrentS `json:"current"`
-	Expected *SalaryAmountS `json:"expected"`
+type Language struct {
+	Name        string `json:"name"`
+	Proficiency string `json:"proficiency"`
 }
 
-// When is_hidden is true, amount and currency are omitted entirely.
-type SalaryCurrentS struct {
-	IsHidden bool     `json:"is_hidden"`
-	Amount   *float64 `json:"amount,omitempty"`
-	Currency *string  `json:"currency,omitempty"`
+type Education struct {
+	Institution string `json:"institution"`
+	Degree      string `json:"degree"`
+	Field       string `json:"field"`
+	Start       string `json:"start"`
+	End         string `json:"end"`
 }
 
-type SalaryAmountS struct {
-	Amount   float64 `json:"amount"`
-	Currency string  `json:"currency"`
+type Authorization struct {
+	Country    string `json:"country"`
+	Type       string `json:"type"`
+	From       string `json:"from"`
+	Until      string `json:"until"`
+	Indefinite bool   `json:"indefinite"`
 }
 
-type PreferencesS struct {
-	TargetRoles     []TargetRoleS     `json:"target_roles"`
-	TargetLocations []TargetLocationS `json:"target_locations"`
-	OpenToRemote    bool              `json:"open_to_remote"`
-	WorkTypes       []string          `json:"work_types"`
+// Experience is one work-history entry. Verification and CompanySlug are
+// read-only: they come from the company's membership records.
+type Experience struct {
+	Company      string `json:"company"`
+	Title        string `json:"title"`
+	Type         string `json:"type"`
+	Start        string `json:"start"` // YYYY-MM
+	End          string `json:"end"`   // YYYY-MM, "" while current
+	Current      bool   `json:"current"`
+	Promoted     bool   `json:"promoted"`
+	Description  string `json:"description"`
+	Verification string `json:"verification"`
+	CompanySlug  string `json:"company_slug"`
 }
 
-type TargetRoleS struct {
-	DesignationID int64  `json:"designation_id"`
-	Name          string `json:"name"`
-}
-
-type TargetLocationS struct {
-	LocationID int64  `json:"location_id"`
-	Name       string `json:"name"`
-	Level      string `json:"level"`
-}
-
-type TimelineItem struct {
-	TimelineID         int64            `json:"timeline_id"`
-	Company            *TimelineCompany `json:"company"`
-	DesignationTitle   string           `json:"designation_title"`
-	StartDate          string           `json:"start_date"`
-	EndDate            *string          `json:"end_date"`
-	IsCurrent          bool             `json:"is_current"`
-	Description        *string          `json:"description"`
-	VerificationStatus string           `json:"verification_status"`
-}
-
-// CompanyID is null when the company is not registered (free-text name only).
-type TimelineCompany struct {
-	CompanyID *int64 `json:"company_id"`
-	Name      string `json:"name"`
-}
-
-type SkillGroup struct {
-	GroupID      int64       `json:"group_id"`
-	GroupName    string      `json:"group_name"`
-	DisplayOrder int         `json:"display_order"`
-	Skills       []SkillChip `json:"skills"`
-}
-
-type SkillChip struct {
-	SkillID      int64  `json:"skill_id"`
-	Name         string `json:"name"`
-	DisplayOrder int    `json:"display_order"`
-}
-
-type Contact struct {
-	Email           string       `json:"email"`
-	PhoneNumber     *string      `json:"phone_number"`
-	PrimaryLocation *LocationRef `json:"primary_location"`
-}
-
-type ContactS struct {
-	CandidateID       int64
-	Email             string
-	PhoneNumber       *string
-	PrimaryLocationID *int64
-}
-
-type LocationRef struct {
-	LocationID int64  `json:"location_id"`
-	Name       string `json:"name"`
-}
-
-type Resume struct {
-	AccessControl   string  `json:"access_control"`
-	ViewURL         *string `json:"view_url,omitempty"`
-	PublicShortLink *string `json:"public_short_link,omitempty"`
-}
-
-// ---- resume
-
+// Verification labels shown on experiences.
 const (
-	ResumePublic              = "PUBLICLY_AVAILABLE"
-	ResumeApplicationGridOnly = "APPLICATION_GRID_ONLY"
+	Unverified = "Unverified"
+	Pending    = "Pending"
+	Verified   = "Verified"
+	Rejected   = "Rejected"
 )
 
-// type WorkAuthorization struct {
-// 	Country           string  `json:"country"`
-// 	AuthorizationType string  `json:"authorization_type"`
-// 	ValidFrom         *string `json:"valid_from"`
-// 	ValidUntil        *string `json:"valid_until"`
-// 	IsIndefinite      bool    `json:"is_indefinite"`
-// }
-
-// ---------- PATCH /me/profile ----------
-
-// PATCH semantics: omitted / null fields are left unchanged.
-type UpdateProfileRequest struct {
-	FullName              *string `json:"full_name" binding:"omitempty,min=2,max=100"`
-	ProfilePhotoURL       *string `json:"profile_photo_url" binding:"omitempty,url"`
-	Gender                *string `json:"gender" binding:"omitempty,oneof=MALE FEMALE NON_BINARY PREFER_NOT_TO_SAY"`
-	HeadlineText          *string `json:"headline_text" binding:"omitempty,max=200"`
-	HeadlineDesignationID *int64  `json:"headline_designation_id" binding:"omitempty,gt=0"`
-	AboutSummary          *string `json:"about_summary" binding:"omitempty,max=2000"`
-}
-
-// ---------- pronouns ----------
-
-type PronounsRequest struct {
-	Pronouns []string `json:"pronouns" binding:"required,max=10,dive,min=1,max=30"`
-}
-
-type PronounsResponse struct {
-	Pronouns []string `json:"pronouns"`
-}
-
-// ProfileRecord is the read-side aggregate behind GET /profile/{slug}.
-type ProfileRecord struct {
-	CandidateID           int64
-	FullName              string
-	ProfileSlug           string
-	ProfilePhotoURL       *string
-	Gender                *string
-	HeadlineText          *string
-	HeadlineDesignationID *int64
-	AboutSummary          *string
-	AboutSummaryUpdatedAt *time.Time
-
-	Pronouns        []string
-	SocialHandles   []SocialHandle
-	Salary          Salary
-	TargetRoles     []TargetRole
-	TargetLocations []TargetLocation
-	OpenToRemote    bool
-	WorkTypes       []string
-	Timeline        []TimelineEntry
-	SkillGroups     []SkillGroup
-
-	Email           string
-	Phone           *string
-	PrimaryLocation *LocationRef
-
-	ResumeAccessControl *string
-	ResumeShortLink     *string
-
-	// WorkAuthorizations []WorkAuthorization
-}
-
-// CandidatePatch: nil fields are left unchanged.
-type CandidatePatch struct {
-	FullName              *string
-	ProfilePhotoURL       *string
-	Gender                *string
-	HeadlineText          *string
-	HeadlineDesignationID *int64
-	AboutSummary          *string
-}
-
-// ---- social
-
-type SocialHandle struct {
-	ID          int64  `json:"id"`
-	CandidateID int64  `json:"-"`
-	Platform    string `json:"platform"`
-	URL         string `json:"url"`
-	ClickCount  int64  `json:"click_count"`
-}
-
-// ---------- social handles ----------
-
-type SocialHandleRequest struct {
-	Platform string `json:"platform" binding:"required,max=50"`
-	URL      string `json:"url" binding:"required,url,max=2048"`
-}
-
-type SocialHandleResponse struct {
-	ID         int64  `json:"id"`
-	Platform   string `json:"platform"`
-	URL        string `json:"url"`
-	ClickCount int64  `json:"click_count"`
-}
-
-// ---------- salary ----------
-
-type Salary struct {
-	CandidateID       int64
-	CurrentAmount     *float64
-	CurrentCurrency   *string
-	CurrentAmountINR  *float64
-	CurrentIsHidden   bool
-	ExpectedAmount    *float64
-	ExpectedCurrency  *string
-	ExpectedAmountINR *float64
-}
-
-type SalaryRequest struct {
-	CurrentAmount    *float64 `json:"current_amount" binding:"omitempty,gte=0"`
-	CurrentCurrency  *string  `json:"current_currency" binding:"omitempty,len=3,alpha"`
-	CurrentIsHidden  bool     `json:"current_is_hidden"`
-	ExpectedAmount   *float64 `json:"expected_amount" binding:"omitempty,gte=0"`
-	ExpectedCurrency *string  `json:"expected_currency" binding:"omitempty,len=3,alpha"`
-}
-
-// Owner view: amounts are returned even when current_is_hidden is true.
-type SalaryResponse struct {
-	CurrentAmount    *float64 `json:"current_amount"`
-	CurrentCurrency  *string  `json:"current_currency"`
-	CurrentIsHidden  bool     `json:"current_is_hidden"`
-	ExpectedAmount   *float64 `json:"expected_amount"`
-	ExpectedCurrency *string  `json:"expected_currency"`
-}
-
-// ---------- preferences ----------
-
-type Preferences struct {
-	OpenToRemote    bool
-	WorkTypes       []string
-	TargetRoles     []TargetRole
-	TargetLocations []TargetLocation
-}
-
-type TargetRole struct {
-	DesignationID int64  `json:"designation_id"`
-	Name          string `json:"name"`
-}
-
-type TargetLocation struct {
-	LocationID int64  `json:"location_id"`
-	Name       string `json:"name"`
-	Level      string `json:"level"`
-}
-
-type PreferencesRequest struct {
-	OpenToRemote bool     `json:"open_to_remote"`
-	WorkTypes    []string `json:"work_types" binding:"required,dive,oneof=FULL_TIME CONTRACT PART_TIME GIG ADVISORY VOLUNTEERING"`
-}
-
-type TargetRolesRequest struct {
-	DesignationIDs []int64 `json:"designation_ids" binding:"required,max=50,dive,gt=0"`
-}
-
-type TargetLocationsRequest struct {
-	LocationIDs []int64 `json:"location_ids" binding:"required,max=50,dive,gt=0"`
-}
-
-// ---------- timeline ----------
-
-type TimelineRequest struct {
-	CompanyID        *int64  `json:"company_id" binding:"omitempty,gt=0"`
-	CompanyNameRaw   *string `json:"company_name_raw" binding:"omitempty,max=200"`
-	DesignationTitle string  `json:"designation_title" binding:"required,max=150"`
-	StartDate        string  `json:"start_date" binding:"required,datetime=2006-01-02"`
-	EndDate          *string `json:"end_date" binding:"omitempty,datetime=2006-01-02"`
-	IsCurrent        bool    `json:"is_current"`
-	Description      *string `json:"description" binding:"omitempty,max=5000"`
-}
-
-type IDResponse struct {
-	ID int64 `json:"id"`
-}
-
-type TimelineIDResponse struct {
-	TimelineID int64 `json:"timeline_id"`
-}
-
-type VerificationReviewRequest struct {
-	Approve bool `json:"approve"`
-}
-
+// Limits on list sizes (the resolve call takes at most 50 names).
 const (
-	VerificationUnverified = "UNVERIFIED"
-	VerificationPending    = "PENDING_VERIFICATION"
-	VerificationVerified   = "VERIFIED"
-	VerificationRejected   = "REJECTED"
+	MaxSkills      = 50
+	MaxSkillGroups = 20
+	MaxTargetRoles = 20
+	MaxLocations   = 50
+	MaxExperiences = 50
+	maxListItems   = 20
 )
 
-const DateLayout = "2006-01-02"
+var (
+	Genders   = []string{"Male", "Female", "Non-binary", "Prefer not to say"}
+	WorkModes = []string{"Remote or hybrid", "Remote", "Hybrid", "On-site", "Open to all arrangements"}
+	// reservedSlugs collide with routes or impersonate the platform.
+	reservedSlugs = []string{"admin", "api", "app", "auth", "about", "companies", "company", "contact", "dashboard",
+		"edit", "faq", "help", "jobs", "login", "logout", "me", "new", "privacy", "profile", "profiles",
+		"recruiter", "referise", "register", "search", "settings", "signin", "signup", "support", "terms"}
+	slugPattern  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+	geonameID    = regexp.MustCompile(`^[1-9][0-9]{0,11}$`)
+	monthPattern = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])$`)
+	phonePattern = regexp.MustCompile(`^[0-9+()\-. ]{0,30}$`)
+	currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
+	htmlTag      = regexp.MustCompile(`<[a-zA-Z/!?]`)
+)
 
-// Timeline is the write model. Dates are "YYYY-MM-DD" strings.
-type Timeline struct {
-	TimelineID       int64
-	CandidateID      int64
-	CompanyID        *int64
-	CompanyNameRaw   *string
-	DesignationTitle string
-	StartDate        string
-	EndDate          *string
-	IsCurrent        bool
-	Description      *string
+// Normalize trims and validates the document in place. Read-only fields are
+// cleared so a client can't set them.
+func (p *Profile) Normalize() error {
+	p.Saved, p.Photo, p.AboutUpdated, p.Skills = false, nil, nil, nil
+	var err error
+	p.Slug = strings.TrimSpace(p.Slug)
+	if utf8.RuneCountInString(p.Slug) < 3 || len(p.Slug) > 50 || !slugPattern.MatchString(p.Slug) {
+		return invalid("slug", "use 3-50 lowercase letters, numbers and single hyphens for your profile handle")
+	}
+	if slices.Contains(reservedSlugs, p.Slug) {
+		return invalid("slug", "that profile handle is reserved")
+	}
+	for _, f := range []struct {
+		field    string
+		value    *string
+		min, max int
+		multi    bool
+	}{
+		{"name", &p.Name, 2, 100, false},
+		{"title", &p.Title, 1, 120, false},
+		{"location", &p.Location, 0, 100, false},
+		{"website", &p.Website, 0, 100, false},
+		{"about", &p.About, 0, 2000, true},
+		{"pronouns", &p.Pronouns, 0, 100, false},
+	} {
+		if *f.value, err = cleanText(f.field, *f.value, f.min, f.max, f.multi); err != nil {
+			return err
+		}
+	}
+	if p.Gender != "" && !slices.Contains(Genders, p.Gender) {
+		return invalid("gender", "unknown gender option")
+	}
+	if p.Email = strings.TrimSpace(p.Email); p.Email != "" {
+		if a, err := mail.ParseAddress(p.Email); err != nil || a.Address != p.Email || len(p.Email) > 255 {
+			return invalid("email", "enter a valid email address")
+		}
+	}
+	if p.Phone = strings.TrimSpace(p.Phone); !phonePattern.MatchString(p.Phone) {
+		return invalid("phone", "a phone number can only contain digits, spaces and + ( ) - .")
+	}
+	if p.ExperienceYears < 0 || p.ExperienceYears > 99 {
+		return invalid("experience_years", "experience must be 0-99 years")
+	}
+	if p.Notice != "" && !slices.Contains(jobs.NoticePeriods, p.Notice) {
+		return invalid("notice", "unknown notice period")
+	}
+	if p.IsServingNotice {
+		if _, err := time.Parse(time.DateOnly, p.LastWorkingDate); err != nil {
+			return invalid("last_working_date", "add your last working date")
+		}
+	} else {
+		p.LastWorkingDate = ""
+	}
+	if p.SalaryCurrency = strings.ToUpper(strings.TrimSpace(p.SalaryCurrency)); !currencyCode.MatchString(p.SalaryCurrency) {
+		return invalid("salary_currency", "unknown currency")
+	}
+	for field, v := range map[string]float64{"current_salary": p.CurrentSalary, "expected_salary": p.ExpectedSalary} {
+		if v < 0 || v > 1e12 {
+			return invalid(field, "salary must be between 0 and 1,000,000,000,000")
+		}
+	}
+	if p.HourlyRate < 0 || p.HourlyRate > 1e6 {
+		return invalid("hourly_rate", "hourly rate must be between 0 and 1,000,000")
+	}
+	if p.WorkTypes, err = enumList("work_types", p.WorkTypes, jobs.WorkTypes); err != nil {
+		return err
+	}
+	if p.WorkMode != "" && !slices.Contains(WorkModes, p.WorkMode) {
+		return invalid("work_mode", "unknown work arrangement")
+	}
+	if p.Relocation != "" && !slices.Contains(jobs.RelocationOptions, p.Relocation) {
+		return invalid("relocation", "unknown relocation preference")
+	}
+	p.PreferredLocations = dedupe(p.PreferredLocations)
+	if len(p.PreferredLocations) > MaxLocations {
+		return invalid("preferred_locations", fmt.Sprintf("choose at most %d locations", MaxLocations))
+	}
+	for _, id := range p.PreferredLocations {
+		if !geonameID.MatchString(id) {
+			return invalid("preferred_locations", "unknown location")
+		}
+	}
+	if p.TargetRoles = dedupe(p.TargetRoles); len(p.TargetRoles) > MaxTargetRoles {
+		return invalid("target_roles", fmt.Sprintf("choose at most %d target roles", MaxTargetRoles))
+	}
+	if err := p.normalizeSkills(); err != nil {
+		return err
+	}
+	if err := p.normalizeExperiences(); err != nil {
+		return err
+	}
+	return p.Details.normalize()
 }
 
-// TimelineEntry is the read model (company already resolved).
-type TimelineEntry struct {
-	TimelineID         int64       `json:"timeline_id"`
-	Company            *CompanyRef `json:"company"`
-	DesignationTitle   string      `json:"designation_title"`
-	StartDate          string      `json:"start_date"`
-	EndDate            *string     `json:"end_date"`
-	IsCurrent          bool        `json:"is_current"`
-	Description        *string     `json:"description"`
-	VerificationStatus string      `json:"verification_status"`
+// normalizeSkills keeps each skill once (in its first group) and drops
+// empty groups. Names are cleaned again when resolved to terms.
+func (p *Profile) normalizeSkills() error {
+	if len(p.SkillGroups) > MaxSkillGroups {
+		return invalid("skill_groups", fmt.Sprintf("use at most %d skill groups", MaxSkillGroups))
+	}
+	seen := map[string]bool{}
+	groups := make([]SkillGroup, 0, len(p.SkillGroups))
+	total := 0
+	for _, g := range p.SkillGroups {
+		name, err := cleanText("skill group name", g.Name, 1, 60, false)
+		if err != nil {
+			return err
+		}
+		var skills []string
+		for _, s := range g.Skills {
+			s = strings.Join(strings.Fields(s), " ")
+			key := strings.ToLower(s)
+			if s == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			skills = append(skills, s)
+		}
+		if total += len(skills); total > MaxSkills {
+			return invalid("skills", fmt.Sprintf("add at most %d skills", MaxSkills))
+		}
+		if len(skills) > 0 {
+			groups = append(groups, SkillGroup{Name: name, Skills: skills})
+		}
+	}
+	p.SkillGroups = groups
+	return nil
 }
 
-// CompanyRef.CompanyID is nil when the company is free text only.
-type CompanyRef struct {
-	CompanyID *int64 `json:"company_id"`
-	Name      string `json:"name"`
+func (p *Profile) normalizeExperiences() error {
+	if len(p.Experiences) > MaxExperiences {
+		return invalid("experiences", fmt.Sprintf("add at most %d experiences", MaxExperiences))
+	}
+	var err error
+	for i := range p.Experiences {
+		e := &p.Experiences[i]
+		e.Verification, e.CompanySlug = "", ""
+		if e.Company, err = cleanText("company", e.Company, 1, 150, false); err != nil {
+			return err
+		}
+		if e.Title, err = cleanText("job title", e.Title, 1, 150, false); err != nil {
+			return err
+		}
+		if e.Description, err = cleanText("description", e.Description, 0, 5000, true); err != nil {
+			return err
+		}
+		if !slices.Contains(jobs.WorkTypes, e.Type) {
+			return invalid("experiences", "unknown employment type")
+		}
+		if !monthPattern.MatchString(e.Start) {
+			return invalid("experiences", "add a start month to each experience")
+		}
+		if e.Current {
+			e.End = ""
+		} else if !monthPattern.MatchString(e.End) || e.End < e.Start {
+			return invalid("experiences", "an experience needs an end month on or after its start")
+		}
+	}
+	return nil
 }
 
-// ---------- skill groups ----------
-
-type SkillGroupRequest struct {
-	GroupName    string `json:"group_name" binding:"required,max=100"`
-	DisplayOrder int    `json:"display_order" binding:"gte=0"`
+func (d *Details) normalize() error {
+	if len(d.SocialLinks) > 10 || len(d.Languages) > maxListItems || len(d.Education) > maxListItems || len(d.Authorizations) > maxListItems {
+		return invalid("details", fmt.Sprintf("add at most 10 links and %d entries per list", maxListItems))
+	}
+	var err error
+	for i := range d.SocialLinks {
+		l := &d.SocialLinks[i]
+		if l.Platform, err = cleanText("platform", l.Platform, 1, 30, false); err != nil {
+			return err
+		}
+		if l.URL, err = cleanURL(l.URL); err != nil {
+			return err
+		}
+	}
+	for i := range d.Languages {
+		l := &d.Languages[i]
+		if l.Name, err = cleanText("language", l.Name, 1, 60, false); err != nil {
+			return err
+		}
+		if l.Proficiency, err = cleanText("proficiency", l.Proficiency, 0, 30, false); err != nil {
+			return err
+		}
+	}
+	for i := range d.Education {
+		e := &d.Education[i]
+		for _, f := range []struct {
+			field    string
+			value    *string
+			min, max int
+		}{{"institution", &e.Institution, 0, 150}, {"degree", &e.Degree, 0, 150}, {"field of study", &e.Field, 0, 150},
+			{"education start", &e.Start, 0, 10}, {"education end", &e.End, 0, 10}} {
+			if *f.value, err = cleanText(f.field, *f.value, f.min, f.max, false); err != nil {
+				return err
+			}
+		}
+		if e.Institution == "" && e.Degree == "" {
+			return invalid("education", "give each education entry an institution or a degree")
+		}
+	}
+	for i := range d.Authorizations {
+		a := &d.Authorizations[i]
+		if a.Country, err = cleanText("country", a.Country, 1, 100, false); err != nil {
+			return err
+		}
+		if a.Type, err = cleanText("authorization type", a.Type, 1, 100, false); err != nil {
+			return err
+		}
+		if a.Indefinite {
+			a.Until = ""
+		}
+		for _, date := range []string{a.From, a.Until} {
+			if _, err := time.Parse(time.DateOnly, date); date != "" && err != nil {
+				return invalid("authorizations", "authorization dates must be YYYY-MM-DD")
+			}
+		}
+		if a.From != "" && a.Until != "" && a.Until < a.From {
+			return invalid("authorizations", "authorization expiry cannot be before its start date")
+		}
+	}
+	return nil
 }
 
-type SkillGroupIDResponse struct {
-	GroupID int64 `json:"group_id"`
+// Public returns the copy public visitors see: private amounts and contact
+// details are blanked (the privacy flags stay so the page can say so).
+func (p Profile) Public() Profile {
+	if p.ContactPrivate {
+		p.Email, p.Phone = "", ""
+	}
+	if p.CurrentSalaryPrivate {
+		p.CurrentSalary = 0
+	}
+	if p.SalaryPrivate {
+		p.ExpectedSalary = 0
+	}
+	if p.HourlyPrivate {
+		p.HourlyRate = 0
+	}
+	p.LastWorkingDate = ""
+	return p
 }
 
-// Pass skill_id for a master skill, or name to create a custom (pending review) one.
-type AddSkillRequest struct {
-	SkillID      *int64  `json:"skill_id" binding:"omitempty,gt=0"`
-	Name         *string `json:"name" binding:"omitempty,max=150"`
-	DisplayOrder int     `json:"display_order" binding:"gte=0"`
+// EnsureLists replaces nil slices with empty ones, so JSON has [] not null.
+func (p *Profile) EnsureLists() {
+	for _, s := range []*[]string{&p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.Skills} {
+		if *s == nil {
+			*s = []string{}
+		}
+	}
+	if p.SkillGroups == nil {
+		p.SkillGroups = []SkillGroup{}
+	}
+	if p.Experiences == nil {
+		p.Experiences = []Experience{}
+	}
+	if p.SocialLinks == nil {
+		p.SocialLinks = []SocialLink{}
+	}
+	if p.Languages == nil {
+		p.Languages = []Language{}
+	}
+	if p.Education == nil {
+		p.Education = []Education{}
+	}
+	if p.Authorizations == nil {
+		p.Authorizations = []Authorization{}
+	}
 }
 
-type AddSkillResponse struct {
-	ID      int64 `json:"id"`
-	SkillID int64 `json:"skill_id"`
+// StarterSlug suggests a handle from a name: "Asha Rao" -> "asha-rao-<suffix>".
+func StarterSlug(name, suffix string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r)):
+			b.WriteRune(r)
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "-"):
+			b.WriteByte('-')
+		}
+	}
+	base := strings.Trim(b.String(), "-")
+	if len(base) > 40 {
+		base = strings.Trim(base[:40], "-")
+	}
+	if base == "" {
+		return "member-" + suffix
+	}
+	return base + "-" + suffix
 }
 
-type UpdateSkillItemRequest struct {
-	DisplayOrder int `json:"display_order" binding:"gte=0"`
+func enumList(field string, values, allowed []string) ([]string, error) {
+	values = dedupe(values)
+	for _, v := range values {
+		if !slices.Contains(allowed, v) {
+			return nil, invalid(field, fmt.Sprintf("unknown %s value %q", field, v))
+		}
+	}
+	return values, nil
 }
 
-// ---------- contact ----------
-
-type ContactRequest struct {
-	Email             string  `json:"email" binding:"required,email,max=255"`
-	PhoneNumber       *string `json:"phone_number" binding:"omitempty,max=30"`
-	PrimaryLocationID *int64  `json:"primary_location_id" binding:"omitempty,gt=0"`
+func dedupe(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
-type ContactResponse struct {
-	Email             string  `json:"email"`
-	PhoneNumber       *string `json:"phone_number"`
-	PrimaryLocationID *int64  `json:"primary_location_id"`
+// cleanText trims s and enforces length in characters. Control characters
+// and HTML-like tags are rejected; multiline allows line breaks.
+func cleanText(field, s string, min, max int, multiline bool) (string, error) {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	if !utf8.ValidString(s) {
+		return "", invalid(field, field+" isn't valid text")
+	}
+	if n := utf8.RuneCountInString(s); n < min || n > max {
+		if min > 0 {
+			return "", invalid(field, fmt.Sprintf("%s must be %d to %d characters", field, min, max))
+		}
+		return "", invalid(field, fmt.Sprintf("%s must be at most %d characters", field, max))
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) && !(multiline && (r == '\n' || r == '\t')) {
+			return "", invalid(field, field+" contains characters that aren't allowed")
+		}
+	}
+	if htmlTag.MatchString(s) {
+		return "", invalid(field, field+" can't contain HTML; use plain text")
+	}
+	return s, nil
 }
 
-// ---------- resume ----------
-
-type ResumeS struct {
-	CandidateID     int64
-	FileURL         string
-	FileSizeBytes   int64
-	AccessControl   string
-	PublicShortLink *string
-	UploadedAt      time.Time
+// cleanURL accepts an absolute http(s) URL with a host and no credentials.
+func cleanURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || len(raw) > 500 {
+		return "", invalid("social_links", "social links must be valid http(s) links")
+	}
+	return u.String(), nil
 }
 
-type ResumeRequest struct {
-	FileURL         string  `json:"file_url" binding:"required,url"`
-	FileSizeBytes   int64   `json:"file_size_bytes" binding:"required,gt=0,lte=5242880"`
-	AccessControl   string  `json:"access_control" binding:"omitempty,oneof=PUBLICLY_AVAILABLE APPLICATION_GRID_ONLY"`
-	PublicShortLink *string `json:"public_short_link" binding:"omitempty,alphanum,max=50"` // code only
+// ValidationError represents an invalid profile.
+type ValidationError struct {
+	Field   string
+	Message string
 }
 
-type ResumeResponse struct {
-	FileURL         string    `json:"file_url"`
-	FileSizeBytes   int64     `json:"file_size_bytes"`
-	AccessControl   string    `json:"access_control"`
-	PublicShortLink *string   `json:"public_short_link"`
-	UploadedAt      time.Time `json:"uploaded_at"`
-}
+func (e *ValidationError) Error() string { return e.Message }
 
-type ResumeGrant struct {
-	ID           int64
-	CandidateID  int64
-	RecruiterID  int64
-	JobPostingID int64
-	GrantedAt    time.Time
-}
+func invalid(field, message string) error { return &ValidationError{Field: field, Message: message} }
 
-type GrantResponse struct {
-	ID           int64     `json:"id"`
-	RecruiterID  int64     `json:"recruiter_id"`
-	JobPostingID int64     `json:"job_posting_id"`
-	GrantedAt    time.Time `json:"granted_at"`
-}
+// NotFoundError: no such profile (or it is private).
+type NotFoundError struct{ Message string }
 
-// Called service-to-service when a candidate applies to a job.
-type CreateGrantRequest struct {
-	CandidateID  int64 `json:"candidate_id" binding:"required,gt=0"`
-	RecruiterID  int64 `json:"recruiter_id" binding:"required,gt=0"`
-	JobPostingID int64 `json:"job_posting_id" binding:"required,gt=0"`
-}
+func (e *NotFoundError) Error() string { return e.Message }
 
-// ---------- work authorization ----------
+// ConflictError: the slug is taken.
+type ConflictError struct{ Message string }
 
-type WorkAuthorizationRequest struct {
-	Country           string  `json:"country" binding:"required,max=100"`
-	AuthorizationType string  `json:"authorization_type" binding:"required,max=100"`
-	ValidFrom         *string `json:"valid_from" binding:"omitempty,datetime=2006-01-02"`
-	ValidUntil        *string `json:"valid_until" binding:"omitempty,datetime=2006-01-02"`
-	IsIndefinite      bool    `json:"is_indefinite"`
-}
+func (e *ConflictError) Error() string { return e.Message }
 
-type WorkAuthorizationResponse struct {
-	ID                int64   `json:"id"`
-	Country           string  `json:"country"`
-	AuthorizationType string  `json:"authorization_type"`
-	ValidFrom         *string `json:"valid_from"`
-	ValidUntil        *string `json:"valid_until"`
-	IsIndefinite      bool    `json:"is_indefinite"`
-}
+var (
+	ErrNotFound  = &NotFoundError{Message: "profile not found"}
+	ErrSlugTaken = &ConflictError{Message: "that profile handle is taken"}
+)
+
+func IsValidation(err error) bool { _, ok := err.(*ValidationError); return ok }
+func IsNotFound(err error) bool   { _, ok := err.(*NotFoundError); return ok }
+func IsConflict(err error) bool   { _, ok := err.(*ConflictError); return ok }
