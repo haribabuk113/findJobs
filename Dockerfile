@@ -1,7 +1,7 @@
 ##
 ## Build stage
 ##
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o findJobs ./cmd/main.go
 ##
 ## Run stage
 ##
-FROM alpine:3.20
+FROM alpine:3.24.3
 
 # Install ca-certificates for HTTPS
 RUN apk add --no-cache ca-certificates tzdata
