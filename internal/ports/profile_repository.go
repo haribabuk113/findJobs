@@ -29,4 +29,12 @@ type ProfileRepository interface {
 	// Experience returns the registered company linked to the experience at
 	// index (companyID "" when the company isn't on Referise).
 	Experience(ctx context.Context, userID string, index int) (companyID, title, start string, err error)
+	// Skills returns the user's skills in display order (empty without a profile).
+	Skills(ctx context.Context, userID string) ([]profiles.SkillRef, error)
+	// AddSkill appends a skill (its master when merged) to the last group;
+	// adding one already there is a no-op. ErrNoProfile, ErrUnknownSkill and
+	// ErrTooManySkills are the failures.
+	AddSkill(ctx context.Context, userID string, skillID int64) error
+	// RemoveSkill drops a skill; removing one that isn't there is a no-op.
+	RemoveSkill(ctx context.Context, userID string, skillID int64) error
 }

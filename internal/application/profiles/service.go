@@ -30,4 +30,10 @@ type ProfileService interface {
 	SetPhoto(ctx context.Context, userID, contentType string, data []byte) (*profiles.Profile, error)
 	// RequestVerification asks the linked company to verify experience index.
 	RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error)
+	// Skills returns the user's skill set, without the list when signature
+	// already matches (the lightweight cross-device sync).
+	Skills(ctx context.Context, userID, signature string) (*profiles.SkillSet, error)
+	// AddSkill and RemoveSkill are the job page's one-click chips; both return the new set.
+	AddSkill(ctx context.Context, userID string, skillID int64) (*profiles.SkillSet, error)
+	RemoveSkill(ctx context.Context, userID string, skillID int64) (*profiles.SkillSet, error)
 }

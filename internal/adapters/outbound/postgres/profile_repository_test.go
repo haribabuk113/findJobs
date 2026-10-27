@@ -74,6 +74,31 @@ func TestProfileLifecycle(t *testing.T) {
 	if !got.Saved || got.AboutUpdated == nil || len(got.SkillGroups) != 2 || len(got.Skills) != 3 || got.TargetRoles[0] != roles[0].Name {
 		t.Fatalf("round trip: %+v", got)
 	}
+	// One-click chips: add appends to the last group (no-op when present),
+	// remove drops it; no profile means ErrNoProfile.
+	if err := repo.RemoveSkill(ctx, user, skills[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := repo.AddSkill(ctx, user, skills[2].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if refs, err := repo.Skills(ctx, user); err != nil || len(refs) != 3 || refs[2].ID != skills[2].ID {
+		t.Fatalf("skills after re-add: %v %v", refs, err)
+	}
+	if g, _ := repo.Get(ctx, user); len(g.SkillGroups) != 1 || g.SkillGroups[0].Skills[2] != skills[2].Name {
+		t.Fatalf("re-added skill: %+v", g.SkillGroups)
+	}
+	if err := repo.AddSkill(ctx, user, -1); err != profiles.ErrUnknownSkill {
+		t.Fatalf("unknown skill: %v", err)
+	}
+	if err := repo.AddSkill(ctx, other, skills[0].ID); err != profiles.ErrNoProfile {
+		t.Fatalf("add without profile: %v", err)
+	}
+	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
+		t.Fatal(err)
+	}
 	if got.Experiences[0].CompanySlug != slug || got.Experiences[0].Verification != profiles.Unverified ||
 		got.Experiences[1].CompanySlug != "" || got.Languages[0].Name != "English" {
 		t.Fatalf("experiences/details: %+v %+v", got.Experiences, got.Details)

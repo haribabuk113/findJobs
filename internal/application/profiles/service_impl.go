@@ -163,3 +163,29 @@ func (s *service) RequestVerification(ctx context.Context, userID string, index 
 	}
 	return s.repo.Get(ctx, userID)
 }
+
+func (s *service) Skills(ctx context.Context, userID, signature string) (*profiles.SkillSet, error) {
+	skills, err := s.repo.Skills(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	set := profiles.NewSkillSet(skills)
+	if set.Signature == signature {
+		return &profiles.SkillSet{Signature: signature}, nil
+	}
+	return set, nil
+}
+
+func (s *service) AddSkill(ctx context.Context, userID string, skillID int64) (*profiles.SkillSet, error) {
+	if err := s.repo.AddSkill(ctx, userID, skillID); err != nil {
+		return nil, err
+	}
+	return s.Skills(ctx, userID, "")
+}
+
+func (s *service) RemoveSkill(ctx context.Context, userID string, skillID int64) (*profiles.SkillSet, error) {
+	if err := s.repo.RemoveSkill(ctx, userID, skillID); err != nil {
+		return nil, err
+	}
+	return s.Skills(ctx, userID, "")
+}

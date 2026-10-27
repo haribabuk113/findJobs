@@ -265,3 +265,71 @@ func (r *ProfileRepository) Experience(ctx context.Context, userID string, index
 	}
 	return *companyID, title, start, nil
 }
+
+func (r *ProfileRepository) Skills(ctx context.Context, userID string) ([]profiles.SkillRef, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT s.id, s.name FROM profile_skills ps JOIN skills s ON s.id = ps.skill_id
+		WHERE ps.user_id = $1 ORDER BY ps.position`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (profiles.SkillRef, error) {
+		var s profiles.SkillRef
+		err := row.Scan(&s.ID, &s.Name)
+		return s, err
+	})
+}
+
+func (r *ProfileRepository) AddSkill(ctx context.Context, userID string, skillID int64) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the profile so concurrent adds can't pass the limit together.
+	var count int
+	err = tx.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM profile_skills WHERE user_id = p.user_id)
+		FROM profiles p WHERE p.user_id = $1 FOR UPDATE`, userID).Scan(&count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return profiles.ErrNoProfile
+	}
+	if err != nil {
+		return err
+	}
+	var master int64
+	err = tx.QueryRow(ctx, `SELECT COALESCE(merged_into, id) FROM skills WHERE id = $1`, skillID).Scan(&master)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return profiles.ErrUnknownSkill
+	}
+	if err != nil {
+		return err
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM profile_skills WHERE user_id = $1 AND skill_id = $2)`,
+		userID, master).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if count >= profiles.MaxSkills {
+		return profiles.ErrTooManySkills
+	}
+	// The end of the last group keeps every group contiguous by position.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO profile_skills (user_id, skill_id, group_name, position)
+		SELECT $1, $2, COALESCE(last.group_name, 'Core skills'), COALESCE(last.position, 0) + 1
+		FROM (SELECT 1) one LEFT JOIN LATERAL (
+			SELECT group_name, position FROM profile_skills WHERE user_id = $1 ORDER BY position DESC LIMIT 1
+		) last ON TRUE`, userID, master); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *ProfileRepository) RemoveSkill(ctx context.Context, userID string, skillID int64) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM profile_skills WHERE user_id = $1 AND skill_id = $2`, userID, skillID)
+	return err
+}

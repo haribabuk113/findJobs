@@ -34,8 +34,42 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, requireUser 
 	me.PUT("", h.Save)
 	me.PUT("/photo", h.Photo)
 	me.POST("/experiences/:index/verification", h.RequestVerification)
+	me.GET("/skills", h.Skills)
+	me.POST("/skills", h.AddSkill)
+	me.DELETE("/skills/:id", h.RemoveSkill)
 
 	api.GET("/profiles/:slug", h.Public)
+}
+
+// Skills handles GET /profile/me/skills?signature=...: only the signature
+// comes back when it matches, the full list otherwise.
+func (h *ProfileHandler) Skills(ctx *gin.Context) {
+	set, err := h.service.Skills(ctx, ctx.GetString(userIDKey), ctx.Query("signature"))
+	h.respond(ctx, http.StatusOK, "Skills retrieved successfully", set, err)
+}
+
+// AddSkill handles POST /profile/me/skills with {"skill_id": n}.
+func (h *ProfileHandler) AddSkill(ctx *gin.Context) {
+	var in struct {
+		SkillID int64 `json:"skill_id"`
+	}
+	if err := ctx.ShouldBindJSON(&in); err != nil || in.SkillID <= 0 {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give a skill_id"))
+		return
+	}
+	set, err := h.service.AddSkill(ctx, ctx.GetString(userIDKey), in.SkillID)
+	h.respond(ctx, http.StatusOK, "Skill added", set, err)
+}
+
+// RemoveSkill handles DELETE /profile/me/skills/:id.
+func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
+	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		h.fail(ctx, http.StatusNotFound, fmt.Errorf("skill not found"))
+		return
+	}
+	set, err := h.service.RemoveSkill(ctx, ctx.GetString(userIDKey), id)
+	h.respond(ctx, http.StatusOK, "Skill removed", set, err)
 }
 
 // Mine handles GET /profile/me (a starter with saved=false before the first save).
