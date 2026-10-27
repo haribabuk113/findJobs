@@ -20,6 +20,12 @@ type ApplicationService interface {
 	Quota(ctx context.Context, userID string) (applications.Quota, error)
 	Applicants(ctx context.Context, jobID, viewerID string, f applications.ApplicantFilter) ([]applications.Applicant, error)
 	SetStage(ctx context.Context, applicationID, viewerID, stage string) (*applications.Applicant, error)
+
+	// Saved jobs: every change returns the updated list, newest first.
+	SavedJobs(ctx context.Context, userID string) ([]applications.SavedJob, error)
+	SaveJob(ctx context.Context, userID, jobID string) ([]applications.SavedJob, error)
+	UnsaveJobs(ctx context.Context, userID string, jobIDs []string) ([]applications.SavedJob, error)
+	ClearApplied(ctx context.Context, userID string) ([]applications.SavedJob, error)
 }
 
 type service struct {
@@ -71,6 +77,34 @@ func (s *service) Applicants(ctx context.Context, jobID, viewerID string, f appl
 		return nil, err
 	}
 	return s.repo.Applicants(ctx, jobID, viewerID, f)
+}
+
+func (s *service) SavedJobs(ctx context.Context, userID string) ([]applications.SavedJob, error) {
+	return s.repo.SavedJobs(ctx, userID)
+}
+
+func (s *service) SaveJob(ctx context.Context, userID, jobID string) ([]applications.SavedJob, error) {
+	if err := s.repo.SaveJob(ctx, userID, jobID); err != nil {
+		return nil, err
+	}
+	return s.repo.SavedJobs(ctx, userID)
+}
+
+func (s *service) UnsaveJobs(ctx context.Context, userID string, jobIDs []string) ([]applications.SavedJob, error) {
+	if len(jobIDs) == 0 || len(jobIDs) > applications.MaxSavedJobs {
+		return nil, &applications.ValidationError{Field: "job_ids", Message: "give 1 to 200 job ids"}
+	}
+	if err := s.repo.UnsaveJobs(ctx, userID, jobIDs); err != nil {
+		return nil, err
+	}
+	return s.repo.SavedJobs(ctx, userID)
+}
+
+func (s *service) ClearApplied(ctx context.Context, userID string) ([]applications.SavedJob, error) {
+	if err := s.repo.ClearApplied(ctx, userID); err != nil {
+		return nil, err
+	}
+	return s.repo.SavedJobs(ctx, userID)
 }
 
 func (s *service) SetStage(ctx context.Context, applicationID, viewerID, stage string) (*applications.Applicant, error) {

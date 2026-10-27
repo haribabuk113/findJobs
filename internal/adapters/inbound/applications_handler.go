@@ -31,6 +31,13 @@ func RegisterApplicationRoutes(api *gin.RouterGroup, h *ApplicationsHandler, req
 	a.POST("/external", h.ApplyExternal)
 	a.GET("/quota", h.Quota)
 
+	s := api.Group("/saved-jobs", requireUser)
+	s.GET("", h.SavedJobs)
+	s.PUT("/:job_id", h.SaveJob)
+	s.DELETE("/:job_id", h.UnsaveJob)
+	s.POST("/remove", h.UnsaveJobs)
+	s.DELETE("", h.ClearApplied)
+
 	r := api.Group("/recruiter", requireUser)
 	r.GET("/jobs/:id/applications", h.Applicants)
 	r.PATCH("/applications/:id", h.SetStage)
@@ -113,6 +120,51 @@ func (h *ApplicationsHandler) SetStage(ctx *gin.Context) {
 	}
 	result, err := h.service.SetStage(ctx, ctx.Param("id"), ctx.GetString(userIDKey), in.Stage)
 	h.respond(ctx, http.StatusOK, "Stage updated", result, err)
+}
+
+// SavedJobs handles GET /saved-jobs: newest first, with an applied flag.
+func (h *ApplicationsHandler) SavedJobs(ctx *gin.Context) {
+	result, err := h.service.SavedJobs(ctx, ctx.GetString(userIDKey))
+	h.respond(ctx, http.StatusOK, "Saved jobs retrieved successfully", result, err)
+}
+
+// SaveJob handles PUT /saved-jobs/:job_id.
+func (h *ApplicationsHandler) SaveJob(ctx *gin.Context) {
+	if len(ctx.Param("job_id")) > 150 {
+		h.fail(ctx, http.StatusNotFound, domainapplications.ErrSavedJobUnknown)
+		return
+	}
+	result, err := h.service.SaveJob(ctx, ctx.GetString(userIDKey), ctx.Param("job_id"))
+	h.respond(ctx, http.StatusOK, "Job saved", result, err)
+}
+
+// UnsaveJob handles DELETE /saved-jobs/:job_id.
+func (h *ApplicationsHandler) UnsaveJob(ctx *gin.Context) {
+	result, err := h.service.UnsaveJobs(ctx, ctx.GetString(userIDKey), []string{ctx.Param("job_id")})
+	h.respond(ctx, http.StatusOK, "Job removed", result, err)
+}
+
+// UnsaveJobs handles POST /saved-jobs/remove {"job_ids": [...]}: bulk unsave.
+func (h *ApplicationsHandler) UnsaveJobs(ctx *gin.Context) {
+	var in struct {
+		JobIDs []string `json:"job_ids"`
+	}
+	if err := ctx.ShouldBindJSON(&in); err != nil {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give job_ids"))
+		return
+	}
+	result, err := h.service.UnsaveJobs(ctx, ctx.GetString(userIDKey), in.JobIDs)
+	h.respond(ctx, http.StatusOK, "Jobs removed", result, err)
+}
+
+// ClearApplied handles DELETE /saved-jobs?applied=true: "Clear applied jobs".
+func (h *ApplicationsHandler) ClearApplied(ctx *gin.Context) {
+	if ctx.Query("applied") != "true" {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("only applied=true is supported"))
+		return
+	}
+	result, err := h.service.ClearApplied(ctx, ctx.GetString(userIDKey))
+	h.respond(ctx, http.StatusOK, "Applied jobs cleared", result, err)
 }
 
 func (h *ApplicationsHandler) respond(ctx *gin.Context, status int, message string, result any, err error) {

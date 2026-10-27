@@ -253,3 +253,51 @@ func (r *ApplicationRepository) SetStage(ctx context.Context, applicationID, vie
 	}
 	return &a, tx.Commit(ctx)
 }
+
+func (r *ApplicationRepository) SavedJobs(ctx context.Context, userID string) ([]applications.SavedJob, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT s.job_id, s.saved_at,
+			EXISTS (SELECT 1 FROM applications a WHERE a.user_id = s.user_id AND a.job_id = s.job_id)
+		FROM saved_jobs s WHERE s.user_id = $1 ORDER BY s.saved_at DESC, s.job_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[applications.SavedJob])
+}
+
+func (r *ApplicationRepository) SaveJob(ctx context.Context, userID, jobID string) error {
+	// ponytail: two parallel saves can both pass the count check and end one past the cap; harmless.
+	tag, err := r.pool.Exec(ctx, `
+		INSERT INTO saved_jobs (user_id, job_id)
+		SELECT $1::uuid, $2::varchar WHERE EXISTS (SELECT 1 FROM jobs WHERE id = $2::varchar)
+			AND (SELECT COUNT(*) FROM saved_jobs WHERE user_id = $1) < $3
+		ON CONFLICT DO NOTHING`, userID, jobID, applications.MaxSavedJobs)
+	if err != nil || tag.RowsAffected() == 1 {
+		return err
+	}
+	// Nothing inserted: already saved (fine), no such job, or the list is full.
+	var saved, exists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM saved_jobs WHERE user_id = $1 AND job_id = $2),
+		EXISTS (SELECT 1 FROM jobs WHERE id = $2)`, userID, jobID).Scan(&saved, &exists); err != nil {
+		return err
+	}
+	switch {
+	case saved:
+		return nil
+	case !exists:
+		return applications.ErrSavedJobUnknown
+	default:
+		return applications.ErrTooManySaved
+	}
+}
+
+func (r *ApplicationRepository) UnsaveJobs(ctx context.Context, userID string, jobIDs []string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM saved_jobs WHERE user_id = $1 AND job_id = ANY($2)`, userID, jobIDs)
+	return err
+}
+
+func (r *ApplicationRepository) ClearApplied(ctx context.Context, userID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM saved_jobs s USING applications a
+		WHERE s.user_id = $1 AND a.user_id = s.user_id AND a.job_id = s.job_id`, userID)
+	return err
+}

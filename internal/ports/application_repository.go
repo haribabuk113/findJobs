@@ -25,4 +25,14 @@ type ApplicationRepository interface {
 	Applicants(ctx context.Context, jobID, viewerID string, f applications.ApplicantFilter) ([]applications.Applicant, error)
 	// SetStage moves an applicant, counting a change as a recruiter action.
 	SetStage(ctx context.Context, applicationID, viewerID, stage string) (*applications.Applicant, error)
+
+	// SavedJobs lists the user's saved jobs, newest first.
+	SavedJobs(ctx context.Context, userID string) ([]applications.SavedJob, error)
+	// SaveJob saves a job (already saved is a no-op): ErrSavedJobUnknown for
+	// a missing job, ErrTooManySaved past MaxSavedJobs.
+	SaveJob(ctx context.Context, userID, jobID string) error
+	// UnsaveJobs removes the given saves (missing ones are ignored).
+	UnsaveJobs(ctx context.Context, userID string, jobIDs []string) error
+	// ClearApplied removes saves for jobs the user has applied to.
+	ClearApplied(ctx context.Context, userID string) error
 }
