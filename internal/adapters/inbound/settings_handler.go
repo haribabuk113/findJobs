@@ -21,10 +21,23 @@ func NewSettingsHandler(service appsettings.SettingsService) *SettingsHandler {
 	return &SettingsHandler{service: service}
 }
 
-// RegisterSettingsRoutes registers settings routes behind the platform-admin guard.
-func RegisterSettingsRoutes(rg *gin.RouterGroup, handler *SettingsHandler, requireAdmin gin.HandlerFunc) {
-	rg.GET("/settings", requireAdmin, handler.Get)
-	rg.PUT("/settings", requireAdmin, handler.Update)
+// RegisterSettingsRoutes registers the admin settings routes behind the
+// platform-admin guard, and the public read-only view on api.
+func RegisterSettingsRoutes(api, admin *gin.RouterGroup, handler *SettingsHandler, requireAdmin gin.HandlerFunc) {
+	admin.GET("/settings", requireAdmin, handler.Get)
+	admin.PUT("/settings", requireAdmin, handler.Update)
+	api.GET("/settings", handler.Public)
+}
+
+// Public handles GET /settings: the limits and prices candidates and
+// recruiters see (no operational values like the FX schedule).
+func (h *SettingsHandler) Public(ctx *gin.Context) {
+	result, err := h.service.Get(ctx)
+	if err != nil {
+		h.respond(ctx, "", nil, err)
+		return
+	}
+	h.respond(ctx, "Settings retrieved successfully", result.Public(), nil)
 }
 
 // Get handles GET /admin/settings

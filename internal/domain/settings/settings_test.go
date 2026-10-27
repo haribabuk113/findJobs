@@ -24,3 +24,10 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicOmitsOperationalValues(t *testing.T) {
+	s := Settings{DailyFreeApplications: 15, ApplyFeePaise: 500, MatchSortFeePaise: 2000, JobPostFeePaise: 9900, FXRefreshTime: "05:00"}
+	if p := s.Public(); p != (PublicSettings{15, 500, 2000, 9900}) {
+		t.Fatalf("public settings: %+v", p)
+	}
+}

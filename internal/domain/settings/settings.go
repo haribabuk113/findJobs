@@ -16,6 +16,19 @@ type Settings struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
+// PublicSettings is what anyone may read: limits and prices, nothing operational.
+type PublicSettings struct {
+	DailyFreeApplications int   `json:"daily_free_applications"`
+	ApplyFeePaise         int64 `json:"apply_fee_paise"`
+	MatchSortFeePaise     int64 `json:"match_sort_fee_paise"`
+	JobPostFeePaise       int64 `json:"job_post_fee_paise"`
+}
+
+// Public returns the publicly readable subset.
+func (s *Settings) Public() PublicSettings {
+	return PublicSettings{s.DailyFreeApplications, s.ApplyFeePaise, s.MatchSortFeePaise, s.JobPostFeePaise}
+}
+
 // MaxFeePaise caps every fee at ₹1,00,000 so a typo can't price the site out.
 const MaxFeePaise = 10_000_000
 

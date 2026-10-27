@@ -17,6 +17,7 @@ import (
 	appcompanies "findJobs/internal/application/companies"
 	appjobs "findJobs/internal/application/jobs"
 	appprofiles "findJobs/internal/application/profiles"
+	appapplications "findJobs/internal/application/applications"
 	appreference "findJobs/internal/application/reference"
 	appsettings "findJobs/internal/application/settings"
 	"findJobs/internal/pkg/config"
@@ -69,7 +70,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 
 	// Platform admin routes
 	settingsHandler := inbound.NewSettingsHandler(appsettings.NewSettingsService(postgres.NewSettingsRepository(db)))
-	inbound.RegisterSettingsRoutes(api.Group("/admin"), settingsHandler, authHandler.RequirePlatformAdmin())
+	inbound.RegisterSettingsRoutes(api, api.Group("/admin"), settingsHandler, authHandler.RequirePlatformAdmin())
 
 	// Reference data: taxonomies, locations, exchange rates, published JSON files
 	referenceService := appreference.NewReferenceService(postgres.NewTaxonomyRepository(db), postgres.NewLocationRepository(db),
@@ -93,6 +94,10 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 	// Candidate profiles: shared taxonomy terms, company verification, photo uploads
 	profileService := appprofiles.NewProfileService(postgres.NewProfileRepository(db), referenceService, companyService, store)
 	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService), authHandler.RequireUser())
+
+	// Applications: Easy Apply with the daily free quota, external confirmations, applicant pipeline
+	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), postgres.NewSettingsRepository(db))
+	inbound.RegisterApplicationRoutes(api, inbound.NewApplicationsHandler(applicationService), authHandler.RequireUser())
 	return router, nil
 }
 

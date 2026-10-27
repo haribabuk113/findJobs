@@ -12,6 +12,7 @@ func validProfile() *Profile {
 		Details: Details{
 			SocialLinks:    []SocialLink{{Platform: "LinkedIn", URL: "https://linkedin.com/in/asha"}},
 			Authorizations: []Authorization{{Country: "India", Type: "Citizen", From: "2001-01-01", Until: "2000-01-01", Indefinite: true}},
+			Projects:       []Project{{Title: " Calm ", Description: "Line one\nLine two", Tags: []string{"UX", " "}}},
 		},
 		Saved: true, Skills: []string{"injected"},
 	}
@@ -36,6 +37,9 @@ func TestNormalizeCleansAndClearsReadOnlyFields(t *testing.T) {
 	}
 	if a := p.Authorizations[0]; a.Until != "" {
 		t.Fatalf("indefinite authorization keeps no expiry: %+v", a)
+	}
+	if pr := p.Projects[0]; pr.Title != "Calm" || pr.URL != "" || len(pr.Tags) != 1 {
+		t.Fatalf("project not cleaned (link optional, blank tags dropped): %+v", pr)
 	}
 }
 
@@ -65,6 +69,9 @@ func TestNormalizeRejects(t *testing.T) {
 		"authorization dates": func(p *Profile) { p.Authorizations[0].Indefinite = false },
 		"empty education":     func(p *Profile) { p.Education = []Education{{Field: "Design"}} },
 		"gender":              func(p *Profile) { p.Gender = "Robot" },
+		"untitled project":    func(p *Profile) { p.Projects[0].Title = " " },
+		"project link scheme": func(p *Profile) { p.Projects[0].URL = "javascript:alert(1)" },
+		"html in project":     func(p *Profile) { p.Projects[0].Description = "<b>hi</b>" },
 	}
 	for name, mutate := range cases {
 		p := validProfile()

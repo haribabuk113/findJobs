@@ -73,6 +73,7 @@ type Details struct {
 	Languages      []Language      `json:"languages"`
 	Education      []Education     `json:"education"`
 	Authorizations []Authorization `json:"authorizations"`
+	Projects       []Project       `json:"projects"`
 }
 
 type SkillGroup struct {
@@ -96,6 +97,14 @@ type Education struct {
 	Field       string `json:"field"`
 	Start       string `json:"start"`
 	End         string `json:"end"`
+}
+
+// Project is one portfolio entry ("A few things I've made"); URL and tags are optional.
+type Project struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	URL         string   `json:"url"`
+	Tags        []string `json:"tags"`
 }
 
 type Authorization struct {
@@ -316,7 +325,7 @@ func (p *Profile) normalizeExperiences() error {
 }
 
 func (d *Details) normalize() error {
-	if len(d.SocialLinks) > 10 || len(d.Languages) > maxListItems || len(d.Education) > maxListItems || len(d.Authorizations) > maxListItems {
+	if len(d.SocialLinks) > 10 || len(d.Languages) > maxListItems || len(d.Education) > maxListItems || len(d.Authorizations) > maxListItems || len(d.Projects) > maxListItems {
 		return invalid("details", fmt.Sprintf("add at most 10 links and %d entries per list", maxListItems))
 	}
 	var err error
@@ -374,6 +383,33 @@ func (d *Details) normalize() error {
 			return invalid("authorizations", "authorization expiry cannot be before its start date")
 		}
 	}
+	for i := range d.Projects {
+		pr := &d.Projects[i]
+		if pr.Title, err = cleanText("project title", pr.Title, 1, 100, false); err != nil {
+			return err
+		}
+		if pr.Description, err = cleanText("project description", pr.Description, 0, 1000, true); err != nil {
+			return err
+		}
+		if pr.URL != "" {
+			if pr.URL, err = cleanURL(pr.URL); err != nil {
+				return invalid("projects", "project links must be valid http(s) links")
+			}
+		}
+		if len(pr.Tags) > 6 {
+			return invalid("projects", "add at most 6 tags per project")
+		}
+		tags := make([]string, 0, len(pr.Tags))
+		for _, t := range pr.Tags {
+			if t, err = cleanText("project tag", t, 0, 30, false); err != nil {
+				return err
+			}
+			if t != "" {
+				tags = append(tags, t)
+			}
+		}
+		pr.Tags = tags
+	}
 	return nil
 }
 
@@ -420,6 +456,9 @@ func (p *Profile) EnsureLists() {
 	}
 	if p.Authorizations == nil {
 		p.Authorizations = []Authorization{}
+	}
+	if p.Projects == nil {
+		p.Projects = []Project{}
 	}
 }
 
