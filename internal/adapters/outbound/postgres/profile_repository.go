@@ -59,6 +59,7 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 		return nil, err
 	}
 	p.Saved = true
+	p.OwnerID = userID
 	p.Photo = companies.FileURL(photo)
 	if err := json.Unmarshal(details, &p.Details); err != nil {
 		return nil, err

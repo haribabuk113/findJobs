@@ -23,6 +23,7 @@ import (
 	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/config"
 	"findJobs/internal/pkg/logger"
+	"findJobs/internal/pkg/scheduler"
 	"findJobs/internal/pkg/tokencrypt"
 
 	"github.com/gin-gonic/gin"
@@ -112,7 +113,13 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 
 	// Candidate profiles: shared taxonomy terms, company verification, photo uploads
 	profileService := appprofiles.NewProfileService(postgres.NewProfileRepository(db), referenceService, companyService, store)
-	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService), authHandler.RequireUser())
+	// Profile analytics: each public profile load is counted in Redis (Postgres
+	// when Redis is down), flushed to Postgres every 5 minutes, and rolled up
+	// daily at 00:20 IST (and at startup, to catch up after downtime).
+	analyticsService := appprofiles.NewAnalyticsService(redisstore.NewProfileViewCounter(postgres.NewProfileAnalyticsRepository(db), rdb))
+	scheduler.Every(bg, db, "profile-views-flush", 5*time.Minute, analyticsService.Flush)
+	scheduler.Daily(bg, db, "profile-analytics-rollup", 0, 20, analyticsService.Rollup)
+	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService, analyticsService), authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Applications: Easy Apply with the daily free quota, external confirmations, applicant pipeline
 	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), postgres.NewSettingsRepository(db))

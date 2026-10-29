@@ -23,6 +23,9 @@ type Profile struct {
 	Saved        bool       `json:"saved"`         // read-only: false for a starter profile not yet stored
 	Photo        *string    `json:"photo"`         // read-only: set with PUT /profile/me/photo
 	AboutUpdated *time.Time `json:"about_updated"` // read-only
+	// OwnerID is the profile's user, for server-side checks (e.g. not counting
+	// the owner's own views). Never serialised: ids stay out of the API.
+	OwnerID string `json:"-"`
 
 	Slug     string `json:"slug"`
 	Name     string `json:"name"`

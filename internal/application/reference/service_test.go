@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"findJobs/internal/domain/reference"
+	"findJobs/internal/pkg/background"
 )
 
 type fakeFX struct {
@@ -38,7 +39,7 @@ func (f *fakeAssets) Manifest(context.Context) (map[string]reference.ManifestEnt
 }
 
 func newTestService(fx *fakeFX, rates *fakeRates, assets *fakeAssets) *service {
-	s := NewReferenceService(nil, nil, rates, assets, fx).(*service)
+	s := NewReferenceService(background.New(), nil, nil, rates, assets, fx).(*service)
 	s.retryWait = 0
 	return s
 }

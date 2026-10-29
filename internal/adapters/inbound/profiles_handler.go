@@ -18,17 +18,18 @@ import (
 
 // ProfileHandler handles the candidate profile's HTTP requests.
 type ProfileHandler struct {
-	service appprofiles.ProfileService
+	service   appprofiles.ProfileService
+	analytics appprofiles.AnalyticsService
 }
 
 // NewProfileHandler creates the HTTP handler for profiles.
-func NewProfileHandler(service appprofiles.ProfileService) *ProfileHandler {
-	return &ProfileHandler{service: service}
+func NewProfileHandler(service appprofiles.ProfileService, analytics appprofiles.AnalyticsService) *ProfileHandler {
+	return &ProfileHandler{service: service, analytics: analytics}
 }
 
 // RegisterProfileRoutes registers profile routes on api (the /api/v1 group).
 // Everything under /profile/me is the signed-in user's own profile.
-func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, requireUser gin.HandlerFunc) {
+func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser, requireUser gin.HandlerFunc) {
 	me := api.Group("/profile/me", requireUser)
 	me.GET("", h.Mine)
 	me.PUT("", h.Save)
@@ -38,7 +39,9 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, requireUser 
 	me.POST("/skills", h.AddSkill)
 	me.DELETE("/skills/:id", h.RemoveSkill)
 
-	api.GET("/profiles/:slug", h.Public)
+	// The optional session lets a view by the profile's owner go uncounted.
+	api.GET("/profiles/:slug", optionalUser, h.Public)
+	api.GET("/profiles/:slug/analytics", h.Analytics)
 }
 
 // Skills handles GET /profile/me/skills?signature=...: only the signature
@@ -116,10 +119,23 @@ func (h *ProfileHandler) RequestVerification(ctx *gin.Context) {
 	h.respond(ctx, http.StatusOK, "Verification requested", p, err)
 }
 
-// Public handles GET /profiles/:slug (404 when missing or private).
+// Public handles GET /profiles/:slug?src=search|direct (404 when missing or
+// private). Each successful load counts as a profile view (non-unique;
+// bots and the owner aren't counted). src=search marks views from the
+// platform's search and discovery pages; anything else counts as direct.
 func (h *ProfileHandler) Public(ctx *gin.Context) {
 	p, err := h.service.Public(ctx, ctx.Param("slug"))
+	if err == nil {
+		h.analytics.RecordView(ctx, p.OwnerID, ctx.GetString(userIDKey), ctx.Query("src"), ctx.GetHeader("User-Agent"))
+	}
 	h.respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
+}
+
+// Analytics handles GET /profiles/:slug/analytics: the public Activity &
+// Analytics tab, aggregates only (404 when missing or private).
+func (h *ProfileHandler) Analytics(ctx *gin.Context) {
+	a, err := h.analytics.Analytics(ctx, ctx.Param("slug"))
+	h.respond(ctx, http.StatusOK, "Profile analytics retrieved successfully", a, err)
 }
 
 func (h *ProfileHandler) respond(ctx *gin.Context, status int, message string, result any, err error) {
