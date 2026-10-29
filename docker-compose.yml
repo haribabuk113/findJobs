@@ -45,6 +45,7 @@ services:
     ports:
       - "8081:8081"
     environment:
+      - ENVIRONMENT=dev
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8081
       - DB_HOST=postgres
