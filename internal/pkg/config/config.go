@@ -55,6 +55,9 @@ type DatabaseConfig struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
+	// StatementTimeout makes Postgres cancel any statement running longer
+	// (lock waits included). 0 disables it. Migrations always run without it.
+	StatementTimeout time.Duration
 }
 
 type RedisConfig struct {
@@ -110,15 +113,16 @@ func Load() (*Config, error) {
 			TrustedProxies:  getEnvList("TRUSTED_PROXIES"),
 		},
 		Database: DatabaseConfig{
-			Host:            l.str("DB_HOST", "localhost"),
-			Port:            l.int("DB_PORT", 5432),
-			Username:        l.str("DB_USERNAME", "dbuser"),
-			Password:        l.str("DB_PASSWORD", devDBPassword),
-			DBName:          l.str("DB_NAME", "jportal"),
-			SSLMode:         l.str("DB_SSL_MODE", "disable"),
-			MaxOpenConns:    l.int("DB_MAX_OPEN_CONNS", 25),
-			MaxIdleConns:    l.int("DB_MAX_IDLE_CONNS", 25),
-			ConnMaxLifetime: l.duration("DB_CONN_MAX_LIFETIME", 5*time.Minute),
+			Host:             l.str("DB_HOST", "localhost"),
+			Port:             l.int("DB_PORT", 5432),
+			Username:         l.str("DB_USERNAME", "dbuser"),
+			Password:         l.str("DB_PASSWORD", devDBPassword),
+			DBName:           l.str("DB_NAME", "jportal"),
+			SSLMode:          l.str("DB_SSL_MODE", "disable"),
+			MaxOpenConns:     l.int("DB_MAX_OPEN_CONNS", 25),
+			MaxIdleConns:     l.int("DB_MAX_IDLE_CONNS", 25),
+			ConnMaxLifetime:  l.duration("DB_CONN_MAX_LIFETIME", 5*time.Minute),
+			StatementTimeout: l.duration("DB_STATEMENT_TIMEOUT", 10*time.Second),
 		},
 		Redis: RedisConfig{
 			Host:         l.str("REDIS_HOST", "localhost"),

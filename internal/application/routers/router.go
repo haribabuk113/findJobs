@@ -39,6 +39,9 @@ const (
 func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
 	gin.SetMode(gin.DebugMode) // TODO Change to ReleaseMode for prod
 	router := gin.Default()
+	// Make *gin.Context forward Done/Err/Deadline to the request context, so a
+	// client disconnect or the request deadline cancels the work in progress.
+	router.ContextWithFallback = true
 	// Gin trusts every proxy by default, which would let any client spoof
 	// X-Forwarded-For and dodge the rate limiter. Trust only configured ones.
 	if err := router.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
@@ -50,7 +53,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 	// Gin attaches middleware only to routes registered after Use, so the
 	// probes registered here skip the rate limiter and the body guard.
 	inbound.RegisterHealthRoutes(router, db.Ping)
-	router.Use(inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
+	router.Use(inbound.RequestTimeout(cfg.Server.WriteTimeout), inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
 
 	api := router.Group("/api/v1")
 

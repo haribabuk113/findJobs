@@ -1,6 +1,7 @@
 package inbound
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sync"
@@ -91,4 +92,17 @@ func RateLimit(rpm, burst int) gin.HandlerFunc {
 
 func abort(ctx *gin.Context, status int, message string) {
 	ctx.AbortWithStatusJSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, fmt.Errorf("%s", message)))
+}
+
+// RequestTimeout gives every request a deadline, so the DB, Redis and IAM
+// calls it makes stop when it runs out. Needs router.ContextWithFallback, so
+// handlers passing *gin.Context as a context see this deadline. The server's
+// WriteTimeout alone never cancels anything: it only cuts the connection.
+func RequestTimeout(d time.Duration) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		c, cancel := context.WithTimeout(ctx.Request.Context(), d)
+		defer cancel()
+		ctx.Request = ctx.Request.WithContext(c)
+		ctx.Next()
+	}
 }

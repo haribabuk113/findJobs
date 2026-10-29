@@ -118,10 +118,21 @@ func (s *service) AccessToken(ctx context.Context, sessionID string) (*auth.Acce
 	return &auth.AccessTokenResponse{AccessToken: sess.AccessToken, ExpiresAt: sess.AccessExpiresAt}, nil
 }
 
+// tokenChangeTimeout bounds the session changes that must not be cancelled
+// halfway (refresh, logout): long enough for the IAM calls (5 s HTTP timeout
+// each) plus the DB work.
+const tokenChangeTimeout = 15 * time.Second
+
 // refresh rotates the refresh token under the session lock — that is where
 // IAM re-checks the account, so a suspended user loses access within one
 // access-token TTL.
+//
+// It ignores the request's cancellation: if the client disconnected after IAM
+// rotated the token but before the new one was saved, the stored token would
+// be a used one, and IAM revokes the whole session when it sees it again.
 func (s *service) refresh(ctx context.Context, sessionID string) (*auth.Session, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenChangeTimeout)
+	defer cancel()
 	var rotated *auth.IAMTokens
 	sess, err := s.sessions.LockSession(ctx, sessionID, func(sess *auth.Session) (*auth.Session, error) {
 		if time.Now().Before(sess.AccessExpiresAt) {
@@ -152,14 +163,18 @@ func (s *service) refresh(ctx context.Context, sessionID string) (*auth.Session,
 		// IAM rotated but saving failed: the stored refresh token is now used,
 		// and presenting it later would make IAM revoke as theft. End the
 		// session cleanly with the new token instead; the user signs in again.
-		s.sessions.DeleteSession(context.WithoutCancel(ctx), sessionID)
-		s.iam.Logout(context.WithoutCancel(ctx), rotated.RefreshToken)
+		s.sessions.DeleteSession(ctx, sessionID)
+		s.iam.Logout(ctx, rotated.RefreshToken)
 	}
 	return sess, err
 }
 
-// Logout deletes the session and revokes it at IAM. Idempotent.
+// Logout deletes the session and revokes it at IAM. Idempotent. Like refresh
+// it ignores the request's cancellation, so a disconnect between the delete
+// and the IAM call can't leave the IAM session alive.
 func (s *service) Logout(ctx context.Context, sessionID string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tokenChangeTimeout)
+	defer cancel()
 	refreshToken, err := s.sessions.DeleteSession(ctx, sessionID)
 	if err != nil {
 		return err

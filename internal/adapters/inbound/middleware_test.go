@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -78,5 +79,34 @@ func TestRateLimit(t *testing.T) {
 	// Another client has its own bucket, even with the same spoofed X-Forwarded-For.
 	if got := do(r, "/bodyless", "", "", "10.0.0.3"); got != 200 {
 		t.Fatalf("other client: got %d, want 200", got)
+	}
+}
+
+func TestRequestTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.ContextWithFallback = true // as in router.go
+	r.Use(RequestTimeout(20 * time.Millisecond))
+	r.GET("/slow", func(ctx *gin.Context) {
+		// Handlers pass *gin.Context straight to the DB, Redis and IAM calls.
+		if _, ok := ctx.Deadline(); !ok {
+			ctx.Status(http.StatusInternalServerError)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			ctx.Status(http.StatusGatewayTimeout)
+		case <-time.After(time.Second):
+			ctx.Status(http.StatusOK)
+		}
+	})
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/slow", nil))
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("got %d, want the handler's context cancelled (504)", rec.Code)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("handler ran %v; the deadline did not cancel it", elapsed)
 	}
 }

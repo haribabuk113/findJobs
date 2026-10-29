@@ -16,6 +16,8 @@ import (
 
 var pool *pgxpool.Pool
 
+const statementTimeoutParam = "statement_timeout"
+
 // New creates a new PostgreSQL connection pool using the provided configuration.
 // It validates the connection by pinging the database before returning.
 // Returns the pool on success, or an error if connection fails.
@@ -39,6 +41,9 @@ func New(cfg *config.Config) (*pgxpool.Pool, error) {
 	poolConfig.MaxConns = int32(cfg.Database.MaxOpenConns)
 	poolConfig.MinConns = int32(cfg.Database.MaxIdleConns)
 	poolConfig.MaxConnLifetime = cfg.Database.ConnMaxLifetime
+	// Server-side backstop: a slow query or a long lock wait can't hold a
+	// connection past this, even when no request context is cancelled.
+	poolConfig.ConnConfig.RuntimeParams[statementTimeoutParam] = fmt.Sprint(cfg.Database.StatementTimeout.Milliseconds())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -62,12 +67,16 @@ func New(cfg *config.Config) (*pgxpool.Pool, error) {
 
 // Migrate applies pending migrations from fsys. A Postgres advisory lock
 // serialises concurrent starts, so only one instance migrates at a time.
+// Migrations use their own connections without the pool's statement_timeout,
+// so a long index build isn't cancelled halfway.
 func Migrate(ctx context.Context, db *pgxpool.Pool, fsys fs.FS) error {
 	locker, err := lock.NewPostgresSessionLocker()
 	if err != nil {
 		return fmt.Errorf("failed to create migration lock: %w", err)
 	}
-	sqlDB := stdlib.OpenDBFromPool(db)
+	connConfig := db.Config().ConnConfig
+	delete(connConfig.RuntimeParams, statementTimeoutParam)
+	sqlDB := stdlib.OpenDB(*connConfig)
 	defer sqlDB.Close()
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fsys, goose.WithSessionLocker(locker))
