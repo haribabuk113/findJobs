@@ -47,6 +47,9 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 	if cfg.RateLimit.RequestsPerMinute <= 0 || cfg.RateLimit.Burst <= 0 {
 		return nil, fmt.Errorf("RATE_LIMIT_RPM and RATE_LIMIT_BURST must be positive")
 	}
+	// Gin attaches middleware only to routes registered after Use, so the
+	// probes registered here skip the rate limiter and the body guard.
+	inbound.RegisterHealthRoutes(router, db.Ping)
 	router.Use(inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
 
 	api := router.Group("/api/v1")
