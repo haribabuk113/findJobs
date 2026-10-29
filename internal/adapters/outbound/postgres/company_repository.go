@@ -172,10 +172,14 @@ func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in 
 func (r *CompanyRepository) Delete(ctx context.Context, slug, userID string) error {
 	return r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
 		// The slug stays reserved, so a deleted brand's link can't be taken over.
-		// ponytail: open applications are cancelled once applications have a status column.
+		// Manual: deleting "removes all active job posts, cancels open candidate
+		// applications". Closing (not just hiding) the jobs stops new applications
+		// through direct links. Rejected applications are already decided and stay.
 		for _, q := range []string{
 			`UPDATE companies SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`,
-			`UPDATE jobs SET is_visible = FALSE WHERE company_id = $1`,
+			`UPDATE applications a SET status = 'cancelled', cancelled_at = NOW() FROM jobs j
+				WHERE a.job_id = j.id AND j.company_id = $1 AND a.status = 'open' AND a.stage <> 'rejected'`,
+			`UPDATE jobs SET is_visible = FALSE, status = 'closed' WHERE company_id = $1`,
 			`DELETE FROM company_members WHERE company_id = $1`,
 		} {
 			if _, err := tx.Exec(ctx, q, companyID); err != nil {

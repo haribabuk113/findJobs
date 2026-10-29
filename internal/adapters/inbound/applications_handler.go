@@ -29,6 +29,7 @@ func RegisterApplicationRoutes(api *gin.RouterGroup, h *ApplicationsHandler, req
 	a.GET("", h.Mine)
 	a.POST("", h.Apply)
 	a.POST("/external", h.ApplyExternal)
+	a.POST("/bulk", h.ApplyBulk)
 	a.GET("/quota", h.Quota)
 
 	s := api.Group("/saved-jobs", requireUser)
@@ -76,6 +77,26 @@ func (h *ApplicationsHandler) ApplyExternal(ctx *gin.Context) {
 	}
 	result, err := h.service.ApplyExternal(ctx, ctx.GetString(userIDKey), jobID)
 	h.respond(ctx, http.StatusCreated, "Application recorded", result, err)
+}
+
+// ApplyBulk handles POST /applications/bulk {"job_ids": [...], "dry_run": bool}.
+// A dry run returns the free/paid split and any blocking jobs; a real run
+// applies to every job or to none.
+func (h *ApplicationsHandler) ApplyBulk(ctx *gin.Context) {
+	var in struct {
+		JobIDs []string `json:"job_ids"`
+		DryRun bool     `json:"dry_run"`
+	}
+	if err := ctx.ShouldBindJSON(&in); err != nil {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give job_ids"))
+		return
+	}
+	result, err := h.service.ApplyBulk(ctx, ctx.GetString(userIDKey), in.JobIDs, in.DryRun)
+	if in.DryRun {
+		h.respond(ctx, http.StatusOK, "Bulk application checked", result, err)
+		return
+	}
+	h.respond(ctx, http.StatusCreated, "Applications submitted", result, err)
 }
 
 // Mine handles GET /applications.

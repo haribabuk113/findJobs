@@ -14,6 +14,9 @@ import (
 type ApplicationService interface {
 	// Apply is Easy Apply, using one of today's free applications.
 	Apply(ctx context.Context, userID, jobID string) (*applications.Application, error)
+	// ApplyBulk applies to up to 50 jobs at once, all or nothing; dryRun
+	// returns the free/paid split without applying.
+	ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool) (*applications.BulkResult, error)
 	// ApplyExternal records "Yes, I applied" for an External job.
 	ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error)
 	Mine(ctx context.Context, userID string) ([]applications.Application, error)
@@ -53,6 +56,18 @@ func (s *service) Apply(ctx context.Context, userID, jobID string) (*application
 		return nil, err
 	}
 	return s.repo.Apply(ctx, userID, jobID, applications.QuotaDay(s.now()), limit)
+}
+
+func (s *service) ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool) (*applications.BulkResult, error) {
+	ids, err := applications.NormalizeBulkJobIDs(jobIDs)
+	if err != nil {
+		return nil, err
+	}
+	st, err := s.settings.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.ApplyBulk(ctx, userID, ids, applications.QuotaDay(s.now()), st.DailyFreeApplications, st.ApplyFeePaise, dryRun)
 }
 
 func (s *service) ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error) {

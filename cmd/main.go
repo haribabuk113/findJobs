@@ -11,6 +11,7 @@ import (
 	_ "time/tzdata"
 
 	"findJobs/internal/application/routers"
+	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/config"
 	"findJobs/internal/pkg/logger"
 	postgrefacade "findJobs/internal/pkg/postgres"
@@ -53,7 +54,8 @@ func main() {
 
 	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
-	routes, err := routers.InitRoutes(cfg, db, rdb)
+	bg := background.New()
+	routes, err := routers.InitRoutes(cfg, db, rdb, bg)
 
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize routes")
@@ -83,12 +85,24 @@ func main() {
 
 	log.Info().Msg("Shutting down server...")
 
+	// Order matters: finish in-flight requests (they may start background
+	// work), then stop the background work, and only then let the deferred
+	// closes shut the Redis and Postgres pools. All within SERVER_SHUTDOWN_TIMEOUT.
+	// No log.Fatal from here on: it would exit without running those closes.
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("Server forced to shutdown")
+		log.Error().Err(err).Msg("HTTP server didn't drain in time; open requests were cut off")
+	}
+	if !bg.Stop(time.Until(deadline(ctx))) {
+		log.Error().Msg("Background work still running at the shutdown deadline")
 	}
 
 	log.Info().Msg("Server stopped gracefully")
+}
+
+func deadline(ctx context.Context) time.Time {
+	d, _ := ctx.Deadline()
+	return d
 }

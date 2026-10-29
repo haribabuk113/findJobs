@@ -18,6 +18,13 @@ const (
 
 var Stages = []string{StageNew, StageShortlisted, StageContacted, StageRejected}
 
+// Statuses. Cancelled applications (their company was deleted) leave the
+// recruiter's applicant list; the candidate still sees them, marked.
+const (
+	StatusOpen      = "open"
+	StatusCancelled = "cancelled"
+)
+
 const (
 	TypePlatform = "platform" // Easy Apply
 	TypeExternal = "external" // the candidate confirmed they applied on the employer's site
@@ -53,6 +60,7 @@ type Application struct {
 	JobStatus   string    `json:"job_status"` // active | closed | expired
 	ApplyType   string    `json:"apply_type"`
 	Stage       string    `json:"stage"`
+	Status      string    `json:"status"` // open | cancelled
 	MatchPct    *int      `json:"match_pct"`
 	SubmittedAt time.Time `json:"submitted_at"`
 }

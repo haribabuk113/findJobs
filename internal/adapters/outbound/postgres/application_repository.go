@@ -54,10 +54,35 @@ func (r *ApplicationRepository) Apply(ctx context.Context, userID, jobID string,
 		return nil, applications.ErrOwnJob
 	}
 
-	// The dossier: profile fields after the privacy rules. Current salary
-	// travels only when the candidate doesn't keep it private.
+	dossier, userSkills, err := loadDossier(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	pct, matched, unmatched := applications.MatchScore(jobSkills, userSkills)
+
+	var a applications.Application
+	err = tx.QueryRow(ctx, `
+		INSERT INTO applications (user_id, job_id, apply_type, calculated_match_score_pct, matched_skill_ids,
+			unmatched_skill_ids, dossier)
+		VALUES ($1, $2, 'platform', $3, $4, $5, $6) RETURNING id, submitted_at`,
+		userID, jobID, pct, matched, unmatched, dossier).Scan(&a.ID, &a.SubmittedAt)
+	if err != nil {
+		return nil, alreadyApplied(err)
+	}
+	if err := takeFree(ctx, tx, userID, day, limit, 1); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.one(ctx, userID, a.ID)
+}
+
+// loadDossier reads the candidate's profile as the recruiter receives it:
+// fields after the privacy rules (current salary travels only when the
+// candidate doesn't keep it private), plus their skill ids for the match.
+func loadDossier(ctx context.Context, tx pgx.Tx, userID string) (dossier []byte, userSkills []int64, err error) {
 	var d applications.Dossier
-	var userSkills []int64
 	var currentSalary float64
 	var salaryPrivate bool
 	err = tx.QueryRow(ctx, `
@@ -70,49 +95,131 @@ func (r *ApplicationRepository) Apply(ctx context.Context, userID, jobID string,
 		&d.Name, &d.ProfileSlug, &d.Email, &d.Phone, &d.Location, &d.ExperienceYears, &d.Notice,
 		&d.SalaryCurrency, &d.ExpectedSalary, &currentSalary, &salaryPrivate, &userSkills, &d.Skills)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, applications.ErrNoProfile
+		return nil, nil, applications.ErrNoProfile
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !salaryPrivate {
 		d.CurrentSalary = &currentSalary
 	}
-	dossier, err := json.Marshal(d)
-	if err != nil {
-		return nil, err
-	}
-	pct, matched, unmatched := applications.MatchScore(jobSkills, userSkills)
+	dossier, err = json.Marshal(d)
+	return dossier, userSkills, err
+}
 
-	var a applications.Application
-	err = tx.QueryRow(ctx, `
-		INSERT INTO applications (user_id, job_id, apply_type, calculated_match_score_pct, matched_skill_ids,
-			unmatched_skill_ids, dossier)
-		VALUES ($1, $2, 'platform', $3, $4, $5, $6) RETURNING id, submitted_at`,
-		userID, jobID, pct, matched, unmatched, dossier).Scan(&a.ID, &a.SubmittedAt)
-	if isUniqueViolation(err) {
-		return nil, applications.ErrAlreadyApplied
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// Take one free application, never past the limit (a limit of 0 means none).
+// takeFree takes n of day's free applications, never past the limit (a limit
+// of 0 means none): ErrQuotaExhausted when they don't all fit.
+func takeFree(ctx context.Context, tx pgx.Tx, userID string, day time.Time, limit, n int) error {
 	var used int
-	err = tx.QueryRow(ctx, `
-		INSERT INTO apply_quota (user_id, day_ist, used) SELECT $1, $2, 1 WHERE $3 > 0
-		ON CONFLICT (user_id, day_ist) DO UPDATE SET used = apply_quota.used + 1 WHERE apply_quota.used < $3
-		RETURNING used`, userID, day, limit).Scan(&used)
+	err := tx.QueryRow(ctx, `
+		INSERT INTO apply_quota (user_id, day_ist, used) SELECT $1, $2, $4::int WHERE $4::int <= $3::int
+		ON CONFLICT (user_id, day_ist) DO UPDATE SET used = apply_quota.used + $4::int WHERE apply_quota.used + $4::int <= $3::int
+		RETURNING used`, userID, day, limit, n).Scan(&used)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, applications.ErrQuotaExhausted
+		return applications.ErrQuotaExhausted
 	}
+	return err
+}
+
+// alreadyApplied maps a duplicate (a parallel request applied first) to ErrAlreadyApplied.
+func alreadyApplied(err error) error {
+	if isUniqueViolation(err) {
+		return applications.ErrAlreadyApplied
+	}
+	return err
+}
+
+func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jobIDs []string, day time.Time, limit int,
+	applyFeePaise int64, dryRun bool) (*applications.BulkResult, error) {
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	defer tx.Rollback(ctx)
+
+	// What each requested job allows, in request order; unknown ids aren't open.
+	rows, err := tx.Query(ctx, `
+		SELECT r.id, COALESCE(j.status = 'active' AND j.posted_at >= NOW() - INTERVAL '30 days', false),
+			COALESCE(j.application = 'External', false), COALESCE(j.recruiter_id::text = $2, false),
+			EXISTS (SELECT 1 FROM applications a WHERE a.user_id = $2::uuid AND a.job_id = r.id),
+			COALESCE(j.skill_ids, '{}')
+		FROM unnest($1::text[]) WITH ORDINALITY r(id, o) LEFT JOIN jobs j ON j.id = r.id
+		ORDER BY r.o`, jobIDs, userID)
+	if err != nil {
 		return nil, err
 	}
-	return r.one(ctx, userID, a.ID)
+	jobs := make([]applications.BulkJob, 0, len(jobIDs))
+	jobSkills := make(map[string][]int64, len(jobIDs))
+	for rows.Next() {
+		var j applications.BulkJob
+		var skills []int64
+		if err := rows.Scan(&j.ID, &j.Open, &j.External, &j.Own, &j.Applied, &skills); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		jobs = append(jobs, j)
+		jobSkills[j.ID] = skills
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	used, err := quotaUsed(ctx, tx, userID, day)
+	if err != nil {
+		return nil, err
+	}
+	res := &applications.BulkResult{BulkPlan: applications.PlanBulk(jobs, limit-used, applyFeePaise),
+		DryRun: dryRun, Applications: []applications.Application{}}
+	var dossier []byte
+	var userSkills []int64
+	if len(res.EasyApply) > 0 {
+		// Easy Apply needs a saved profile; a dry run reports that too.
+		if dossier, userSkills, err = loadDossier(ctx, tx, userID); err != nil {
+			return nil, err
+		}
+	}
+	if dryRun {
+		return res, nil
+	}
+	if err := res.Err(); err != nil {
+		return nil, err
+	}
+
+	// ponytail: one INSERT per job (≤50); use a pgx.Batch if bulk apply latency matters.
+	for _, jobID := range res.EasyApply {
+		pct, matched, unmatched := applications.MatchScore(jobSkills[jobID], userSkills)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO applications (user_id, job_id, apply_type, calculated_match_score_pct, matched_skill_ids,
+				unmatched_skill_ids, dossier)
+			VALUES ($1, $2, 'platform', $3, $4, $5, $6)`, userID, jobID, pct, matched, unmatched, dossier); err != nil {
+			return nil, alreadyApplied(err)
+		}
+	}
+	for _, jobID := range res.External {
+		if _, err := tx.Exec(ctx, `INSERT INTO applications (user_id, job_id, apply_type) VALUES ($1, $2, 'external')`,
+			userID, jobID); err != nil {
+			return nil, alreadyApplied(err)
+		}
+	}
+	if len(res.EasyApply) > 0 {
+		if err := takeFree(ctx, tx, userID, day, limit, len(res.EasyApply)); err != nil {
+			return nil, err
+		}
+	}
+	applied := append(append([]string{}, res.EasyApply...), res.External...)
+	// Manual "Saved jobs": applied cards move from the saved list to Applied.
+	if _, err := tx.Exec(ctx, `DELETE FROM saved_jobs WHERE user_id = $1 AND job_id = ANY($2)`, userID, applied); err != nil {
+		return nil, err
+	}
+	list, err := tx.Query(ctx, `SELECT `+myApplicationColumns+` WHERE a.user_id = $1 AND a.job_id = ANY($2::text[])
+		ORDER BY array_position($3::text[], a.job_id::text)`, userID, applied, jobIDs) // request order
+	if err != nil {
+		return nil, err
+	}
+	if res.Applications, err = pgx.CollectRows(list, pgx.RowToStructByPos[applications.Application]); err != nil {
+		return nil, err
+	}
+	return res, tx.Commit(ctx)
 }
 
 func (r *ApplicationRepository) ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error) {
@@ -147,7 +254,7 @@ func (r *ApplicationRepository) ApplyExternal(ctx context.Context, userID, jobID
 }
 
 const myApplicationColumns = `a.id, a.job_id, j.title, COALESCE(c.name, j.company_name_text, ''), ` + jobState + `,
-	a.apply_type, a.stage, a.calculated_match_score_pct, a.submitted_at
+	a.apply_type, a.stage, a.status, a.calculated_match_score_pct, a.submitted_at
 	FROM applications a JOIN jobs j ON j.id = a.job_id LEFT JOIN companies c ON c.id = j.company_id`
 
 func (r *ApplicationRepository) Mine(ctx context.Context, userID string) ([]applications.Application, error) {
@@ -168,8 +275,15 @@ func (r *ApplicationRepository) one(ctx context.Context, userID, id string) (*ap
 }
 
 func (r *ApplicationRepository) QuotaUsed(ctx context.Context, userID string, day time.Time) (int, error) {
+	return quotaUsed(ctx, r.pool, userID, day)
+}
+
+// quotaUsed reads through the pool, or inside a transaction.
+func quotaUsed(ctx context.Context, db interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, userID string, day time.Time) (int, error) {
 	var used int
-	err := r.pool.QueryRow(ctx, `SELECT COALESCE((SELECT used FROM apply_quota WHERE user_id = $1 AND day_ist = $2), 0)`,
+	err := db.QueryRow(ctx, `SELECT COALESCE((SELECT used FROM apply_quota WHERE user_id = $1 AND day_ist = $2), 0)`,
 		userID, day).Scan(&used)
 	return used, err
 }
@@ -208,7 +322,7 @@ func (r *ApplicationRepository) Applicants(ctx context.Context, jobID, viewerID 
 		order = `a.calculated_match_score_pct DESC NULLS LAST, a.submitted_at DESC`
 	}
 	rows, err := r.pool.Query(ctx, `SELECT `+applicantColumns+` FROM applications a
-		WHERE a.job_id = $1 AND a.apply_type = 'platform' AND ($2 = '' OR a.stage = $2)
+		WHERE a.job_id = $1 AND a.apply_type = 'platform' AND a.status = 'open' AND ($2 = '' OR a.stage = $2)
 			AND COALESCE(a.calculated_match_score_pct, 0) >= $3
 		ORDER BY `+order, jobID, f.Stage, f.MinMatch)
 	if err != nil {
@@ -226,7 +340,7 @@ func (r *ApplicationRepository) SetStage(ctx context.Context, applicationID, vie
 	var jobID, current string
 	err = tx.QueryRow(ctx, `
 		SELECT a.job_id, a.stage FROM applications a JOIN jobs j ON j.id = a.job_id
-		WHERE a.id = $1 AND a.apply_type = 'platform' AND `+canManage+` FOR UPDATE OF a`, applicationID, viewerID).
+		WHERE a.id = $1 AND a.apply_type = 'platform' AND a.status = 'open' AND `+canManage+` FOR UPDATE OF a`, applicationID, viewerID).
 		Scan(&jobID, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, applications.ErrApplicationGone

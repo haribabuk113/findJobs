@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"findJobs/internal/domain/reference"
+	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/logger"
 	"findJobs/internal/ports"
 )
@@ -37,6 +38,7 @@ type service struct {
 	rates     ports.RatesRepository
 	assets    ports.AssetRepository
 	fx        ports.FXProvider
+	bg        *background.Group // refreshes and debounced publishes; stopped on shutdown
 
 	mu         sync.Mutex
 	scheduled  map[string]bool
@@ -45,9 +47,9 @@ type service struct {
 }
 
 // NewReferenceService creates the reference-data service using dependency injection.
-func NewReferenceService(taxonomy ports.TaxonomyRepository, locations ports.LocationRepository, rates ports.RatesRepository,
-	assets ports.AssetRepository, fx ports.FXProvider) ReferenceService {
-	return &service{taxonomy: taxonomy, locations: locations, rates: rates, assets: assets, fx: fx,
+func NewReferenceService(bg *background.Group, taxonomy ports.TaxonomyRepository, locations ports.LocationRepository,
+	rates ports.RatesRepository, assets ports.AssetRepository, fx ports.FXProvider) ReferenceService {
+	return &service{bg: bg, taxonomy: taxonomy, locations: locations, rates: rates, assets: assets, fx: fx,
 		scheduled: map[string]bool{}, retryWait: 5 * time.Second}
 }
 
@@ -157,16 +159,30 @@ func (s *service) RefreshRatesAsync() bool {
 	if !s.refreshing.CompareAndSwap(false, true) {
 		return false
 	}
-	go func() {
+	started := s.bg.Go(func(ctx context.Context) {
 		defer s.refreshing.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if err := s.RefreshRates(ctx); err != nil {
-			l := logger.Get()
-			l.Error().Err(err).Msg("exchange-rate refresh failed; keeping the last published rates")
+			s.logFailure(err, "exchange-rate refresh failed; keeping the last published rates")
 		}
-	}()
-	return true
+	})
+	if !started { // shutting down
+		s.refreshing.Store(false)
+	}
+	return started
+}
+
+// logFailure logs background work that failed, except a cancellation by
+// shutdown, which is expected: the transaction rolled back and the work is
+// redone later (the next refresh, or PublishAll at the next start).
+func (s *service) logFailure(err error, msg string) {
+	l := logger.Get()
+	if s.bg.Stopping() {
+		l.Info().Err(err).Msg("stopped by shutdown: " + msg)
+		return
+	}
+	l.Error().Err(err).Msg(msg)
 }
 
 // RefreshRates follows manual "Salary": up to 3 attempts; on failure nothing
@@ -214,7 +230,8 @@ func (s *service) PublishAll(ctx context.Context) error {
 }
 
 // publishSoon schedules one publish of kind after publishDelay; calls in
-// between collapse into it.
+// between collapse into it. A publish still pending at shutdown is dropped;
+// PublishAll at the next start catches up (unchanged exports are skipped).
 func (s *service) publishSoon(kind string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -226,10 +243,11 @@ func (s *service) publishSoon(kind string) {
 		s.mu.Lock()
 		delete(s.scheduled, kind)
 		s.mu.Unlock()
-		if err := s.publish(context.Background(), kind); err != nil {
-			l := logger.Get()
-			l.Error().Err(err).Str("kind", kind).Msg("asset publish failed")
-		}
+		s.bg.Go(func(ctx context.Context) {
+			if err := s.publish(ctx, kind); err != nil {
+				s.logFailure(err, "asset publish failed: "+kind)
+			}
+		})
 	})
 }
 

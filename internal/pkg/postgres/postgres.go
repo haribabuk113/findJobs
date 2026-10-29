@@ -38,8 +38,8 @@ func New(cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	// Apply pool settings from config
-	poolConfig.MaxConns = int32(cfg.Database.MaxOpenConns)
-	poolConfig.MinConns = int32(cfg.Database.MaxIdleConns)
+	poolConfig.MaxConns = int32(cfg.Database.MaxConns)
+	poolConfig.MinConns = int32(cfg.Database.MinConns)
 	poolConfig.MaxConnLifetime = cfg.Database.ConnMaxLifetime
 	// Server-side backstop: a slow query or a long lock wait can't hold a
 	// connection past this, even when no request context is cancelled.

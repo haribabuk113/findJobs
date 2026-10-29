@@ -14,6 +14,12 @@ type ApplicationRepository interface {
 	// and dossier are computed from stored data, and one free application is
 	// taken from day's quota (ErrQuotaExhausted when limit is reached).
 	Apply(ctx context.Context, userID, jobID string, day time.Time, limit int) (*applications.Application, error)
+	// ApplyBulk applies to several jobs in one transaction, all or nothing:
+	// Easy Apply jobs as in Apply (sharing the day's quota), External ones as
+	// in ApplyExternal, and the applied jobs leave the saved list. With dryRun
+	// it only returns the plan; otherwise it returns the plan's Err when a job
+	// blocks the batch or any application would need paying.
+	ApplyBulk(ctx context.Context, userID string, jobIDs []string, day time.Time, limit int, applyFeePaise int64, dryRun bool) (*applications.BulkResult, error)
 	// ApplyExternal records "Yes, I applied" for an open External job (no quota).
 	ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error)
 	// Mine lists the candidate's applications, newest first.

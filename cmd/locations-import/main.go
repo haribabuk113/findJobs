@@ -22,6 +22,7 @@ import (
 	"findJobs/internal/adapters/outbound/geonames"
 	"findJobs/internal/adapters/outbound/postgres"
 	appreference "findJobs/internal/application/reference"
+	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/config"
 	"findJobs/internal/pkg/logger"
 	postgrefacade "findJobs/internal/pkg/postgres"
@@ -67,7 +68,7 @@ func main() {
 	defer postgrefacade.Close()
 
 	// Only the location and asset repositories are used by ImportLocations.
-	service := appreference.NewReferenceService(nil, postgres.NewLocationRepository(db), nil, postgres.NewAssetRepository(db), nil)
+	service := appreference.NewReferenceService(background.New(), nil, postgres.NewLocationRepository(db), nil, postgres.NewAssetRepository(db), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := service.ImportLocations(ctx, locations); err != nil {

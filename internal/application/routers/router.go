@@ -20,6 +20,7 @@ import (
 	appapplications "findJobs/internal/application/applications"
 	appreference "findJobs/internal/application/reference"
 	appsettings "findJobs/internal/application/settings"
+	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/config"
 	"findJobs/internal/pkg/logger"
 	"findJobs/internal/pkg/tokencrypt"
@@ -36,9 +37,21 @@ const (
 	maxImageBody = 5 << 20
 )
 
-func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http.Handler, error) {
-	gin.SetMode(gin.DebugMode) // TODO Change to ReleaseMode for prod
-	router := gin.Default()
+// InitRoutes wires the app. Background work (rate refreshes, asset publishing)
+// runs in bg, which main stops on shutdown before closing the pools.
+func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *background.Group) (http.Handler, error) {
+	// Debug mode only in dev: it prints route tables and warnings meant for a terminal.
+	if cfg.Environment == config.EnvDev {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	// gin.New, not gin.Default: Default's text logger writes beside zerolog's
+	// JSON and breaks log aggregation. RequestLogger replaces it (and records
+	// ctx.Errors, the only place a 500's cause is kept); Recover runs inside it
+	// so a panic is logged as that request's 500.
+	router := gin.New()
+	router.Use(inbound.RequestLogger(logger.Get()), inbound.Recover())
 	// Make *gin.Context forward Done/Err/Deadline to the request context, so a
 	// client disconnect or the request deadline cancels the work in progress.
 	router.ContextWithFallback = true
@@ -79,10 +92,10 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 	inbound.RegisterSettingsRoutes(api, api.Group("/admin"), settingsHandler, authHandler.RequirePlatformAdmin())
 
 	// Reference data: taxonomies, locations, exchange rates, published JSON files
-	referenceService := appreference.NewReferenceService(postgres.NewTaxonomyRepository(db), postgres.NewLocationRepository(db),
+	referenceService := appreference.NewReferenceService(bg, postgres.NewTaxonomyRepository(db), postgres.NewLocationRepository(db),
 		postgres.NewRatesRepository(db), postgres.NewAssetRepository(db), fx.NewClient(cfg.FXEndpoint))
 	inbound.RegisterReferenceRoutes(api.Group("/assets"), api.Group("/admin"), inbound.NewReferenceHandler(referenceService), authHandler.RequirePlatformAdmin())
-	go startReferenceData(referenceService)
+	bg.Go(func(ctx context.Context) { startReferenceData(ctx, referenceService) })
 
 	// Recruiting: posting and managing jobs, job pages, recruiter cards
 	recruitingService := appjobs.NewRecruitingService(postgres.NewRecruitingRepository(db), referenceService,
@@ -110,9 +123,9 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client) (http
 // startReferenceData makes sure every asset kind has a published file, and
 // fetches exchange rates once if none exist yet (the daily refresh is a
 // scheduled job). Runs in the background so a slow provider can't delay startup.
-func startReferenceData(service appreference.ReferenceService) {
+func startReferenceData(ctx context.Context, service appreference.ReferenceService) {
 	log := logger.Get()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if err := service.PublishAll(ctx); err != nil {
 		log.Error().Err(err).Msg("publishing reference files failed")

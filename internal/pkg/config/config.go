@@ -46,14 +46,17 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Host            string
-	Port            int
-	Username        string
-	Password        string
-	DBName          string
-	SSLMode         string
-	MaxOpenConns    int
-	MaxIdleConns    int
+	Host     string
+	Port     int
+	Username string
+	Password string
+	DBName   string
+	SSLMode  string
+	// MaxConns caps the pool; MinConns are kept open even when idle. Every
+	// instance can hold MaxConns, so instances × MaxConns must stay under
+	// Postgres's max_connections (100 by default).
+	MaxConns        int
+	MinConns        int
 	ConnMaxLifetime time.Duration
 	// StatementTimeout makes Postgres cancel any statement running longer
 	// (lock waits included). 0 disables it. Migrations always run without it.
@@ -119,8 +122,8 @@ func Load() (*Config, error) {
 			Password:         l.str("DB_PASSWORD", devDBPassword),
 			DBName:           l.str("DB_NAME", "jportal"),
 			SSLMode:          l.str("DB_SSL_MODE", "disable"),
-			MaxOpenConns:     l.int("DB_MAX_OPEN_CONNS", 25),
-			MaxIdleConns:     l.int("DB_MAX_IDLE_CONNS", 25),
+			MaxConns:         l.int("DB_MAX_CONNS", 25),
+			MinConns:         l.int("DB_MIN_CONNS", 2),
 			ConnMaxLifetime:  l.duration("DB_CONN_MAX_LIFETIME", 5*time.Minute),
 			StatementTimeout: l.duration("DB_STATEMENT_TIMEOUT", 10*time.Second),
 		},
@@ -152,10 +155,22 @@ func Load() (*Config, error) {
 			IdleTimeout:  l.duration("SESSION_IDLE_TIMEOUT", 168*time.Hour),
 		},
 	}
-	if err := errors.Join(append(l.errs, cfg.validate()...)...); err != nil {
+	if err := errors.Join(append(append(l.errs, cfg.validatePool()...), cfg.validate()...)...); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// validatePool checks the DB pool sizes in every environment.
+func (c *Config) validatePool() []error {
+	var errs []error
+	if c.Database.MaxConns < 1 {
+		errs = append(errs, fmt.Errorf("DB_MAX_CONNS must be at least 1, got %d", c.Database.MaxConns))
+	}
+	if c.Database.MinConns < 0 || c.Database.MinConns > c.Database.MaxConns {
+		errs = append(errs, fmt.Errorf("DB_MIN_CONNS must be 0 to DB_MAX_CONNS (%d), got %d", c.Database.MaxConns, c.Database.MinConns))
+	}
+	return errs
 }
 
 // validate checks the environment, and in prod rejects dev-only settings.
