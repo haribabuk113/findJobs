@@ -36,8 +36,26 @@ func RegisterReferenceRoutes(assets, admin *gin.RouterGroup, handler *ReferenceH
 	admin.POST("/fx/refresh", requireAdmin, handler.RefreshRates)
 }
 
+type mergeRequest struct {
+	SourceIDs []int64 `json:"source_ids"`
+	MasterID  int64   `json:"master_id"`
+}
+
+type termUpdate struct {
+	Name   *string `json:"name"`
+	Status *string `json:"status"`
+}
+
 // Manifest handles GET /assets/manifest: which file is current per kind.
 // Public and identical for everyone, so shared caches may hold it briefly.
+//
+//	@Summary	Current reference file per kind
+//	@ID			getAssetManifest
+//	@Tags		reference
+//	@Produce	json
+//	@Success	200	{object}	adapters.Response{data=map[string]domainreference.ManifestEntry}
+//	@Failure	500	{object}	adapters.Response
+//	@Router		/api/v1/assets/manifest [get]
 func (h *ReferenceHandler) Manifest(ctx *gin.Context) {
 	manifest, err := h.service.Manifest(ctx)
 	if err != nil {
@@ -50,6 +68,15 @@ func (h *ReferenceHandler) Manifest(ctx *gin.Context) {
 
 // Asset handles GET /assets/:file. File names carry a timestamp and content
 // hash, so the bytes behind a name never change: cache forever.
+//
+//	@Summary	One reference file (immutable)
+//	@ID			getAsset
+//	@Tags		reference
+//	@Produce	json
+//	@Param		file	path	string	true	"File name from the manifest"
+//	@Success	200	{file}	file
+//	@Failure	404,500	{object}	adapters.Response
+//	@Router		/api/v1/assets/{file} [get]
 func (h *ReferenceHandler) Asset(ctx *gin.Context) {
 	asset, err := h.service.Asset(ctx, ctx.Param("file"))
 	if err != nil {
@@ -62,6 +89,19 @@ func (h *ReferenceHandler) Asset(ctx *gin.Context) {
 }
 
 // ListTerms handles GET /admin/taxonomy/:kind?status=&page=&page_size=
+//
+//	@Summary	Taxonomy review queue
+//	@ID			listTerms
+//	@Tags		admin
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		kind	path	string	true	"skills or designations"
+//	@Param		status	query	string	false	"Term status"
+//	@Param		page	query	int	false	"Page"
+//	@Param		page_size	query	int	false	"Page size"
+//	@Success	200	{object}	adapters.Response{data=domainreference.TermPage}
+//	@Failure	400,401,403,500	{object}	adapters.Response
+//	@Router		/api/v1/admin/taxonomy/{kind} [get]
 func (h *ReferenceHandler) ListTerms(ctx *gin.Context) {
 	kind, err := domainreference.ParseKind(ctx.Param("kind"))
 	if err != nil {
@@ -79,16 +119,25 @@ func (h *ReferenceHandler) ListTerms(ctx *gin.Context) {
 }
 
 // MergeTerms handles POST /admin/taxonomy/:kind/merge {"source_ids": [..], "master_id": n}
+//
+//	@Summary	Merge terms into a master term
+//	@ID			mergeTerms
+//	@Tags		admin
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		kind	path	string	true	"skills or designations"
+//	@Param		body	body	mergeRequest	true	"Sources and master"
+//	@Success	200	{object}	adapters.Response
+//	@Failure	400,401,403,404,500	{object}	adapters.Response
+//	@Router		/api/v1/admin/taxonomy/{kind}/merge [post]
 func (h *ReferenceHandler) MergeTerms(ctx *gin.Context) {
 	kind, err := domainreference.ParseKind(ctx.Param("kind"))
 	if err != nil {
 		h.failErr(ctx, err)
 		return
 	}
-	var body struct {
-		SourceIDs []int64 `json:"source_ids"`
-		MasterID  int64   `json:"master_id"`
-	}
+	var body mergeRequest
 	if err := ctx.ShouldBindJSON(&body); err != nil {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid merge request"))
 		return
@@ -98,15 +147,25 @@ func (h *ReferenceHandler) MergeTerms(ctx *gin.Context) {
 }
 
 // UpdateTerm handles PATCH /admin/taxonomy/:kind/:id {"name"?: "", "status"?: "verified"|"pending"}
+//
+//	@Summary	Rename or approve a term
+//	@ID			updateTerm
+//	@Tags		admin
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		kind	path	string	true	"skills or designations"
+//	@Param		id	path	int	true	"Term id"
+//	@Param		body	body	termUpdate	true	"Fields to change"
+//	@Success	200	{object}	adapters.Response{data=domainreference.Term}
+//	@Failure	400,401,403,404,409,500	{object}	adapters.Response
+//	@Router		/api/v1/admin/taxonomy/{kind}/{id} [patch]
 func (h *ReferenceHandler) UpdateTerm(ctx *gin.Context) {
 	kind, id, ok := h.kindAndID(ctx)
 	if !ok {
 		return
 	}
-	var body struct {
-		Name   *string `json:"name"`
-		Status *string `json:"status"`
-	}
+	var body termUpdate
 	if err := ctx.ShouldBindJSON(&body); err != nil {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid update request"))
 		return
@@ -116,6 +175,17 @@ func (h *ReferenceHandler) UpdateTerm(ctx *gin.Context) {
 }
 
 // DeleteTerm handles DELETE /admin/taxonomy/:kind/:id
+//
+//	@Summary	Reject (delete) a term and its aliases
+//	@ID			deleteTerm
+//	@Tags		admin
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		kind	path	string	true	"skills or designations"
+//	@Param		id	path	int	true	"Term id"
+//	@Success	200	{object}	adapters.Response
+//	@Failure	400,401,403,404,500	{object}	adapters.Response
+//	@Router		/api/v1/admin/taxonomy/{kind}/{id} [delete]
 func (h *ReferenceHandler) DeleteTerm(ctx *gin.Context) {
 	kind, id, ok := h.kindAndID(ctx)
 	if !ok {
@@ -126,6 +196,15 @@ func (h *ReferenceHandler) DeleteTerm(ctx *gin.Context) {
 
 // RefreshRates handles POST /admin/fx/refresh: starts a refresh in the
 // background (provider retries can outlast the request) and returns 202.
+//
+//	@Summary	Refresh exchange rates now (runs in the background)
+//	@ID			refreshRates
+//	@Tags		admin
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	202	{object}	adapters.Response
+//	@Failure	401,403,409	{object}	adapters.Response
+//	@Router		/api/v1/admin/fx/refresh [post]
 func (h *ReferenceHandler) RefreshRates(ctx *gin.Context) {
 	if !h.service.RefreshRatesAsync() {
 		h.fail(ctx, http.StatusConflict, fmt.Errorf("a refresh is already running"))

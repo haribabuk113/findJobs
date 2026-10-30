@@ -45,6 +45,17 @@ func RegisterAuthRoutes(rg *gin.RouterGroup, handler *AuthHandler) {
 }
 
 // CreateSession handles POST /auth/session {"code": "<code from IAM redirect>"}
+//
+//	@Summary	Exchange the IAM login code for a session
+//	@ID			createSession
+//	@Tags		auth
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body	domainauth.SessionRequest	true	"Code from IAM's redirect"
+//	@Success	200	{object}	adapters.Response{data=domainauth.SessionResponse}
+//	@Header	200	{string}	Set-Cookie	"jp_session=<id>; HttpOnly; SameSite=Lax"
+//	@Failure	400,401,415,500	{object}	adapters.Response
+//	@Router		/api/v1/auth/session [post]
 func (h *AuthHandler) CreateSession(ctx *gin.Context) {
 	// JSONBody (router-wide) already rejected non-JSON: blocks login CSRF.
 	var request domainauth.SessionRequest
@@ -64,6 +75,15 @@ func (h *AuthHandler) CreateSession(ctx *gin.Context) {
 }
 
 // GetCurrentUser handles GET /auth/me
+//
+//	@Summary	Current user for the session
+//	@ID			getCurrentUser
+//	@Tags		auth
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainauth.SessionResponse}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/auth/me [get]
 func (h *AuthHandler) GetCurrentUser(ctx *gin.Context) {
 	h.withSession(ctx, "User retrieved successfully", func(sessionID string) (any, error) {
 		result, err := h.service.GetCurrentUser(ctx, sessionID)
@@ -76,6 +96,15 @@ func (h *AuthHandler) GetCurrentUser(ctx *gin.Context) {
 
 // AccessToken handles GET /auth/token: the current IAM access token, for the
 // app's own server to call IAM (admin API) as this user. no-store: bearer credential.
+//
+//	@Summary	Current IAM access token (frontend server only)
+//	@ID			getIamAccessToken
+//	@Tags		auth
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainauth.AccessTokenResponse}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/auth/token [get]
 func (h *AuthHandler) AccessToken(ctx *gin.Context) {
 	ctx.Header("Cache-Control", "no-store")
 	h.withSession(ctx, "Token retrieved successfully", func(sessionID string) (any, error) {
@@ -103,6 +132,15 @@ func (h *AuthHandler) withSession(ctx *gin.Context, message string, fn func(sess
 }
 
 // Logout handles POST /auth/logout. Idempotent: no cookie is still a success.
+//
+//	@Summary	End the session
+//	@ID			logout
+//	@Tags		auth
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=map[string]string}
+//	@Failure	500	{object}	adapters.Response
+//	@Router		/api/v1/auth/logout [post]
 func (h *AuthHandler) Logout(ctx *gin.Context) {
 	sessionID, _ := ctx.Cookie(sessionCookie)
 	h.setCookie(ctx, "", -1)

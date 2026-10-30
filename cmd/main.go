@@ -19,6 +19,16 @@ import (
 	"findJobs/migrations"
 )
 
+//go:generate go run github.com/swaggo/swag/cmd/swag@v1.16.4 init -q -g main.go -d .,../internal/adapters/inbound,../internal/adapters,../internal/domain/applications,../internal/domain/auth,../internal/domain/companies,../internal/domain/jobs,../internal/domain/profiles,../internal/domain/reference,../internal/domain/settings --parseInternal --outputTypes yaml -o ../docs/swagger
+
+// main wires and starts the API. The lines below are the swag API header.
+//
+//	@title						Referise Backend API
+//	@version					1.1.0
+//	@BasePath					/
+//	@securityDefinitions.apikey	sessionCookie
+//	@in							cookie
+//	@name						jp_session
 func main() {
 	log := logger.Get()
 

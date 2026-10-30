@@ -50,6 +50,19 @@ type jobRef struct {
 	JobID string `json:"job_id"`
 }
 
+type bulkApplyRequest struct {
+	JobIDs []string `json:"job_ids"`
+	DryRun bool     `json:"dry_run"`
+}
+
+type stageRequest struct {
+	Stage string `json:"stage"`
+}
+
+type jobIDsRequest struct {
+	JobIDs []string `json:"job_ids"`
+}
+
 func (h *ApplicationsHandler) bindJob(ctx *gin.Context) (string, bool) {
 	var in jobRef
 	if err := ctx.ShouldBindJSON(&in); err != nil || in.JobID == "" || len(in.JobID) > 150 {
@@ -60,6 +73,17 @@ func (h *ApplicationsHandler) bindJob(ctx *gin.Context) (string, bool) {
 }
 
 // Apply handles POST /applications {"job_id"}: Easy Apply.
+//
+//	@Summary	Easy Apply to a job
+//	@ID			easyApply
+//	@Tags		applications
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	jobRef	true	"Job to apply to"
+//	@Success	201	{object}	adapters.Response{data=domainapplications.Application}
+//	@Failure	400,401,402,404,409,500	{object}	adapters.Response
+//	@Router		/api/v1/applications [post]
 func (h *ApplicationsHandler) Apply(ctx *gin.Context) {
 	jobID, ok := h.bindJob(ctx)
 	if !ok {
@@ -70,6 +94,17 @@ func (h *ApplicationsHandler) Apply(ctx *gin.Context) {
 }
 
 // ApplyExternal handles POST /applications/external {"job_id"}: "Yes, I applied".
+//
+//	@Summary	Record Yes-I-applied for an External job
+//	@ID			confirmExternalApplication
+//	@Tags		applications
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	jobRef	true	"The External job"
+//	@Success	201	{object}	adapters.Response{data=domainapplications.Application}
+//	@Failure	400,401,404,409,500	{object}	adapters.Response
+//	@Router		/api/v1/applications/external [post]
 func (h *ApplicationsHandler) ApplyExternal(ctx *gin.Context) {
 	jobID, ok := h.bindJob(ctx)
 	if !ok {
@@ -82,11 +117,20 @@ func (h *ApplicationsHandler) ApplyExternal(ctx *gin.Context) {
 // ApplyBulk handles POST /applications/bulk {"job_ids": [...], "dry_run": bool}.
 // A dry run returns the free/paid split and any blocking jobs; a real run
 // applies to every job or to none.
+//
+//	@Summary	Apply to several jobs at once (200 on dry_run, 201 otherwise)
+//	@ID			bulkApply
+//	@Tags		applications
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	bulkApplyRequest	true	"Jobs; dry_run only checks"
+//	@Success	200	{object}	adapters.Response{data=domainapplications.BulkResult}
+//	@Success	201	{object}	adapters.Response{data=domainapplications.BulkResult}
+//	@Failure	400,401,402,409,500	{object}	adapters.Response
+//	@Router		/api/v1/applications/bulk [post]
 func (h *ApplicationsHandler) ApplyBulk(ctx *gin.Context) {
-	var in struct {
-		JobIDs []string `json:"job_ids"`
-		DryRun bool     `json:"dry_run"`
-	}
+	var in bulkApplyRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give job_ids"))
 		return
@@ -100,18 +144,49 @@ func (h *ApplicationsHandler) ApplyBulk(ctx *gin.Context) {
 }
 
 // Mine handles GET /applications.
+//
+//	@Summary	Application history
+//	@ID			getMyApplications
+//	@Tags		applications
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.Application}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/applications [get]
 func (h *ApplicationsHandler) Mine(ctx *gin.Context) {
 	result, err := h.service.Mine(ctx, ctx.GetString(userIDKey))
 	h.respond(ctx, http.StatusOK, "Applications retrieved successfully", result, err)
 }
 
 // Quota handles GET /applications/quota: today's free applications.
+//
+//	@Summary	Today's free Easy Apply quota
+//	@ID			getApplyQuota
+//	@Tags		applications
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainapplications.Quota}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/applications/quota [get]
 func (h *ApplicationsHandler) Quota(ctx *gin.Context) {
 	result, err := h.service.Quota(ctx, ctx.GetString(userIDKey))
 	h.respond(ctx, http.StatusOK, "Quota retrieved successfully", result, err)
 }
 
 // Applicants handles GET /recruiter/jobs/:id/applications?stage=&min_match=&sort=recent|match.
+//
+//	@Summary	Applicants for a job
+//	@ID			getApplicants
+//	@Tags		applications
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		id	path	string	true	"Job id"
+//	@Param		stage	query	string	false	"Pipeline stage"
+//	@Param		min_match	query	int	false	"Minimum match score %"
+//	@Param		sort	query	string	false	"recent or match"
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.Applicant}
+//	@Failure	400,401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/recruiter/jobs/{id}/applications [get]
 func (h *ApplicationsHandler) Applicants(ctx *gin.Context) {
 	f := domainapplications.ApplicantFilter{Stage: ctx.Query("stage"), Sort: ctx.Query("sort")}
 	if raw := ctx.Query("min_match"); raw != "" {
@@ -127,14 +202,24 @@ func (h *ApplicationsHandler) Applicants(ctx *gin.Context) {
 }
 
 // SetStage handles PATCH /recruiter/applications/:id {"stage"}.
+//
+//	@Summary	Move an applicant to another stage
+//	@ID			setApplicationStage
+//	@Tags		applications
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		id	path	string	true	"Application id (uuid)"
+//	@Param		body	body	stageRequest	true	"New stage"
+//	@Success	200	{object}	adapters.Response{data=domainapplications.Applicant}
+//	@Failure	400,401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/recruiter/applications/{id} [patch]
 func (h *ApplicationsHandler) SetStage(ctx *gin.Context) {
 	if !applicationID.MatchString(ctx.Param("id")) {
 		h.fail(ctx, http.StatusNotFound, fmt.Errorf("application not found"))
 		return
 	}
-	var in struct {
-		Stage string `json:"stage"`
-	}
+	var in stageRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give a stage"))
 		return
@@ -144,12 +229,31 @@ func (h *ApplicationsHandler) SetStage(ctx *gin.Context) {
 }
 
 // SavedJobs handles GET /saved-jobs: newest first, with an applied flag.
+//
+//	@Summary	Saved jobs, newest first
+//	@ID			getSavedJobs
+//	@Tags		saved-jobs
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.SavedJob}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/saved-jobs [get]
 func (h *ApplicationsHandler) SavedJobs(ctx *gin.Context) {
 	result, err := h.service.SavedJobs(ctx, ctx.GetString(userIDKey))
 	h.respond(ctx, http.StatusOK, "Saved jobs retrieved successfully", result, err)
 }
 
 // SaveJob handles PUT /saved-jobs/:job_id.
+//
+//	@Summary	Save a job
+//	@ID			saveJob
+//	@Tags		saved-jobs
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		job_id	path	string	true	"Job id"
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.SavedJob}
+//	@Failure	400,401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/saved-jobs/{job_id} [put]
 func (h *ApplicationsHandler) SaveJob(ctx *gin.Context) {
 	if len(ctx.Param("job_id")) > 150 {
 		h.fail(ctx, http.StatusNotFound, domainapplications.ErrSavedJobUnknown)
@@ -160,16 +264,35 @@ func (h *ApplicationsHandler) SaveJob(ctx *gin.Context) {
 }
 
 // UnsaveJob handles DELETE /saved-jobs/:job_id.
+//
+//	@Summary	Unsave a job
+//	@ID			unsaveJob
+//	@Tags		saved-jobs
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		job_id	path	string	true	"Job id"
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.SavedJob}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/saved-jobs/{job_id} [delete]
 func (h *ApplicationsHandler) UnsaveJob(ctx *gin.Context) {
 	result, err := h.service.UnsaveJobs(ctx, ctx.GetString(userIDKey), []string{ctx.Param("job_id")})
 	h.respond(ctx, http.StatusOK, "Job removed", result, err)
 }
 
 // UnsaveJobs handles POST /saved-jobs/remove {"job_ids": [...]}: bulk unsave.
+//
+//	@Summary	Unsave several jobs
+//	@ID			unsaveJobs
+//	@Tags		saved-jobs
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	jobIDsRequest	true	"Jobs to unsave"
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.SavedJob}
+//	@Failure	400,401,500	{object}	adapters.Response
+//	@Router		/api/v1/saved-jobs/remove [post]
 func (h *ApplicationsHandler) UnsaveJobs(ctx *gin.Context) {
-	var in struct {
-		JobIDs []string `json:"job_ids"`
-	}
+	var in jobIDsRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give job_ids"))
 		return
@@ -179,6 +302,16 @@ func (h *ApplicationsHandler) UnsaveJobs(ctx *gin.Context) {
 }
 
 // ClearApplied handles DELETE /saved-jobs?applied=true: "Clear applied jobs".
+//
+//	@Summary	Clear applied jobs from the saved list
+//	@ID			clearAppliedSavedJobs
+//	@Tags		saved-jobs
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		applied	query	string	true	"Must be true"
+//	@Success	200	{object}	adapters.Response{data=[]domainapplications.SavedJob}
+//	@Failure	400,401,500	{object}	adapters.Response
+//	@Router		/api/v1/saved-jobs [delete]
 func (h *ApplicationsHandler) ClearApplied(ctx *gin.Context) {
 	if ctx.Query("applied") != "true" {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("only applied=true is supported"))

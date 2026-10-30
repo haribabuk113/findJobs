@@ -24,11 +24,34 @@ const readyTimeout = 2 * time.Second
 // Register these before the rate limiter, so frequent probes never use up a
 // client bucket or get throttled.
 func RegisterHealthRoutes(router gin.IRoutes, pingDB func(context.Context) error) {
-	router.GET("/healthz", func(ctx *gin.Context) {
-		ctx.Header("Cache-Control", "no-store")
-		ctx.JSON(http.StatusOK, adapters.BuildResponse("ok", nil, nil))
-	})
-	router.GET("/readyz", func(ctx *gin.Context) {
+	router.GET("/healthz", healthz)
+	router.GET("/readyz", readyz(pingDB))
+}
+
+// healthz handles GET /healthz: the process is up.
+//
+//	@Summary	Liveness probe
+//	@ID			liveness
+//	@Tags		health
+//	@Produce	json
+//	@Success	200	{object}	adapters.Response
+//	@Router		/healthz [get]
+func healthz(ctx *gin.Context) {
+	ctx.Header("Cache-Control", "no-store")
+	ctx.JSON(http.StatusOK, adapters.BuildResponse("ok", nil, nil))
+}
+
+// readyz handles GET /readyz: the database answers a ping.
+//
+//	@Summary	Readiness probe (database ping)
+//	@ID			readiness
+//	@Tags		health
+//	@Produce	json
+//	@Success	200	{object}	adapters.Response
+//	@Failure	503	{object}	adapters.Response
+//	@Router		/readyz [get]
+func readyz(pingDB func(context.Context) error) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "no-store")
 		pingCtx, cancel := context.WithTimeout(ctx.Request.Context(), readyTimeout)
 		defer cancel()
@@ -41,5 +64,5 @@ func RegisterHealthRoutes(router gin.IRoutes, pingDB func(context.Context) error
 			return
 		}
 		ctx.JSON(http.StatusOK, adapters.BuildResponse("ready", nil, nil))
-	})
+	}
 }

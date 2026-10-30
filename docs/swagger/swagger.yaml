@@ -1,0 +1,3995 @@
+basePath: /
+definitions:
+  adapters.Response:
+    properties:
+      data: {}
+      error: {}
+      message:
+        type: string
+      status:
+        type: boolean
+    type: object
+  applications.Applicant:
+    properties:
+      dossier:
+        $ref: '#/definitions/applications.Dossier'
+      id:
+        type: string
+      match_pct:
+        type: integer
+      matched_skills:
+        items:
+          type: string
+        type: array
+      stage:
+        type: string
+      stage_updated_at:
+        type: string
+      submitted_at:
+        type: string
+      unmatched_skills:
+        items:
+          type: string
+        type: array
+    type: object
+  applications.Application:
+    properties:
+      apply_type:
+        type: string
+      company_name:
+        type: string
+      id:
+        type: string
+      job_id:
+        type: string
+      job_status:
+        description: active | closed | expired
+        type: string
+      job_title:
+        type: string
+      match_pct:
+        type: integer
+      stage:
+        type: string
+      status:
+        description: open | cancelled
+        type: string
+      submitted_at:
+        type: string
+    type: object
+  applications.BulkProblem:
+    properties:
+      job_id:
+        type: string
+      reason:
+        type: string
+    type: object
+  applications.BulkResult:
+    properties:
+      applications:
+        items:
+          $ref: '#/definitions/applications.Application'
+        type: array
+      dry_run:
+        type: boolean
+      easy_apply:
+        description: job ids, in request order
+        items:
+          type: string
+        type: array
+      external:
+        description: logged as applied; the client opens their sites
+        items:
+          type: string
+        type: array
+      fee_paise:
+        description: Paid × the apply fee
+        type: integer
+      free:
+        description: Easy Apply jobs covered by today's free applications
+        type: integer
+      paid:
+        description: Easy Apply jobs past the free allowance
+        type: integer
+      problems:
+        description: jobs that block the batch; drop them and retry
+        items:
+          $ref: '#/definitions/applications.BulkProblem'
+        type: array
+    type: object
+  applications.Dossier:
+    properties:
+      current_salary:
+        description: nil when the candidate keeps it private
+        type: number
+      email:
+        type: string
+      expected_salary:
+        type: number
+      experience_years:
+        type: integer
+      location:
+        type: string
+      name:
+        type: string
+      notice:
+        type: string
+      phone:
+        type: string
+      profile_slug:
+        type: string
+      salary_currency:
+        type: string
+      skills:
+        items:
+          type: string
+        type: array
+    type: object
+  applications.Quota:
+    properties:
+      limit:
+        type: integer
+      remaining:
+        type: integer
+      used:
+        type: integer
+    type: object
+  applications.SavedJob:
+    properties:
+      applied:
+        type: boolean
+      job_id:
+        type: string
+      saved_at:
+        type: string
+    type: object
+  auth.AccessTokenResponse:
+    properties:
+      access_token:
+        type: string
+      expires_at:
+        type: string
+    type: object
+  auth.Authorization:
+    properties:
+      companies:
+        description: Companies the user currently belongs to (approved memberships).
+        items:
+          $ref: '#/definitions/auth.CompanyMembership'
+        type: array
+      is_platform_admin:
+        description: 'PlatformAdmin: the user''s ecosystem ID is in PLATFORM_ADMIN_IDS.'
+        type: boolean
+      roles:
+        items:
+          type: string
+        type: array
+    type: object
+  auth.CompanyMembership:
+    properties:
+      name:
+        type: string
+      role:
+        description: admin | hr | employee
+        type: string
+      slug:
+        type: string
+    type: object
+  auth.SessionRequest:
+    properties:
+      code:
+        type: string
+    required:
+    - code
+    type: object
+  auth.SessionResponse:
+    properties:
+      authorization:
+        $ref: '#/definitions/auth.Authorization'
+      expires_at:
+        description: ExpiresAt is the session's absolute end; the user logs in again
+          after it.
+        type: string
+      user:
+        $ref: '#/definitions/auth.User'
+    type: object
+  auth.User:
+    properties:
+      email:
+        type: string
+      iam_user_id:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      status:
+        type: string
+    type: object
+  companies.Benefit:
+    properties:
+      details:
+        type: string
+      icon:
+        type: string
+      title:
+        type: string
+    type: object
+  companies.Company:
+    properties:
+      about:
+        type: string
+      banner_url:
+        type: string
+      benefits:
+        items:
+          $ref: '#/definitions/companies.Benefit'
+        type: array
+      branch_location_ids:
+        items:
+          type: string
+        type: array
+      created_at:
+        type: string
+      founded_year:
+        type: integer
+      hq_address:
+        type: string
+      hq_country_code:
+        type: string
+      hq_location_id:
+        type: string
+      id:
+        type: string
+      industries:
+        items:
+          type: string
+        type: array
+      logo_url:
+        type: string
+      name:
+        type: string
+      products:
+        items:
+          $ref: '#/definitions/companies.Product'
+        type: array
+      size:
+        type: string
+      slug:
+        type: string
+      social:
+        additionalProperties:
+          type: string
+        type: object
+      tagline:
+        type: string
+      viewer_role:
+        description: ViewerRole is the signed-in viewer's role when they are a current
+          member.
+        type: string
+      website:
+        type: string
+    type: object
+  companies.Dashboard:
+    properties:
+      active_jobs:
+        type: integer
+      admins:
+        type: integer
+      applications:
+        type: integer
+      closed_jobs:
+        type: integer
+      employees:
+        type: integer
+      hr:
+        type: integer
+      pending_requests:
+        type: integer
+      total_jobs:
+        type: integer
+    type: object
+  companies.Input:
+    properties:
+      about:
+        type: string
+      benefits:
+        items:
+          $ref: '#/definitions/companies.Benefit'
+        type: array
+      branch_location_ids:
+        items:
+          type: string
+        type: array
+      founded_year:
+        type: integer
+      hq_address:
+        type: string
+      hq_location_id:
+        type: string
+      industries:
+        items:
+          type: string
+        type: array
+      name:
+        type: string
+      products:
+        items:
+          $ref: '#/definitions/companies.Product'
+        type: array
+      size:
+        type: string
+      slug:
+        type: string
+      social:
+        additionalProperties:
+          type: string
+        type: object
+      tagline:
+        type: string
+      website:
+        type: string
+    type: object
+  companies.Member:
+    properties:
+      email:
+        type: string
+      name:
+        type: string
+      requested_at:
+        type: string
+      role:
+        type: string
+      started_on:
+        type: string
+      status:
+        type: string
+      title:
+        type: string
+      user_id:
+        type: string
+    type: object
+  companies.Product:
+    properties:
+      about:
+        type: string
+      name:
+        type: string
+      url:
+        type: string
+    type: object
+  companies.SearchCriteria:
+    properties:
+      countries:
+        items:
+          type: string
+        type: array
+      industries:
+        items:
+          type: string
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      query:
+        type: string
+      sizes:
+        items:
+          type: string
+        type: array
+    type: object
+  companies.SearchResult:
+    properties:
+      companies:
+        items:
+          $ref: '#/definitions/companies.Summary'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  companies.Summary:
+    properties:
+      hq_country_code:
+        type: string
+      hq_location_id:
+        type: string
+      id:
+        type: string
+      industries:
+        items:
+          type: string
+        type: array
+      logo_url:
+        type: string
+      name:
+        type: string
+      size:
+        type: string
+      slug:
+        type: string
+      tagline:
+        type: string
+    type: object
+  inbound.bulkApplyRequest:
+    properties:
+      dry_run:
+        type: boolean
+      job_ids:
+        items:
+          type: string
+        type: array
+    type: object
+  inbound.draftRequest:
+    properties:
+      form:
+        additionalProperties: {}
+        type: object
+    type: object
+  inbound.jobIDsRequest:
+    properties:
+      job_ids:
+        items:
+          type: string
+        type: array
+    type: object
+  inbound.jobRef:
+    properties:
+      job_id:
+        type: string
+    type: object
+  inbound.mergeRequest:
+    properties:
+      master_id:
+        type: integer
+      source_ids:
+        items:
+          type: integer
+        type: array
+    type: object
+  inbound.recruiterCard:
+    properties:
+      open_jobs:
+        type: integer
+      recruiter:
+        $ref: '#/definitions/jobs.Person'
+    type: object
+  inbound.roleRequest:
+    properties:
+      role:
+        type: string
+    type: object
+  inbound.skillRequest:
+    properties:
+      skill_id:
+        type: integer
+    type: object
+  inbound.slugAvailability:
+    properties:
+      available:
+        type: boolean
+    type: object
+  inbound.stageRequest:
+    properties:
+      stage:
+        type: string
+    type: object
+  inbound.termUpdate:
+    properties:
+      name:
+        type: string
+      status:
+        type: string
+    type: object
+  jobs.Analytics:
+    properties:
+      applications:
+        type: integer
+      expires_in_days:
+        type: integer
+      high_fit:
+        description: 'Easy Apply only: match ≥ 70%'
+        type: integer
+      outbound_clicks:
+        type: integer
+      recruiter_actions:
+        description: Easy Apply only
+        type: integer
+      views:
+        type: integer
+    type: object
+  jobs.CompanyCard:
+    properties:
+      logo_url:
+        type: string
+      name:
+        type: string
+      size:
+        type: string
+      slug:
+        type: string
+      tagline:
+        type: string
+      website:
+        type: string
+    type: object
+  jobs.Detail:
+    properties:
+      analytics:
+        $ref: '#/definitions/jobs.Analytics'
+      application:
+        type: string
+      applied_at:
+        description: |-
+          Viewer-specific: when the signed-in viewer applied, and whether they
+          own the job (recruiter or an admin of its company).
+        type: string
+      benefits:
+        items:
+          type: string
+        type: array
+      can_manage:
+        type: boolean
+      category:
+        type: string
+      company:
+        $ref: '#/definitions/jobs.CompanyCard'
+      company_name:
+        type: string
+      company_sector:
+        type: string
+      company_size:
+        type: string
+      company_slug:
+        type: string
+      currency:
+        type: string
+      description:
+        type: string
+      designation_id:
+        type: integer
+      experience_years:
+        type: integer
+      external_url:
+        type: string
+      id:
+        type: string
+      interview_rounds:
+        type: integer
+      interview_stages:
+        items:
+          type: string
+        type: array
+      level:
+        type: string
+      location:
+        type: string
+      location_ids:
+        items:
+          type: string
+        type: array
+      location_type:
+        type: string
+      normalized_inr_amount:
+        type: number
+      notice_periods:
+        items:
+          type: string
+        type: array
+      posted_at:
+        type: string
+      recruiter:
+        $ref: '#/definitions/jobs.Person'
+      recruiter_actions:
+        type: integer
+      relocation:
+        type: string
+      salary_hidden:
+        type: boolean
+      salary_max:
+        type: number
+      salary_min:
+        type: number
+      share_hash:
+        description: Recruiter/admin only (manual "Job Analytics Engine").
+        type: string
+      skill_ids:
+        items:
+          type: integer
+        type: array
+      skills:
+        description: names, same order as skill_ids
+        items:
+          type: string
+        type: array
+      status:
+        description: active | closed | expired
+        type: string
+      summary:
+        type: string
+      tier:
+        type: string
+      title:
+        type: string
+      views:
+        type: integer
+      work_modes:
+        items:
+          type: string
+        type: array
+      work_types:
+        items:
+          type: string
+        type: array
+    type: object
+  jobs.Draft:
+    properties:
+      form:
+        additionalProperties: {}
+        type: object
+      id:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  jobs.Job:
+    properties:
+      application:
+        type: string
+      benefits:
+        items:
+          type: string
+        type: array
+      category:
+        type: string
+      company:
+        description: |-
+          CompanyID/CompanySlug are nil for free and unlinked jobs; CompanyName
+          then falls back to the text the recruiter typed (or "").
+        type: string
+      company_name:
+        type: string
+      company_sector:
+        type: string
+      company_size:
+        type: string
+      company_slug:
+        type: string
+      currency:
+        type: string
+      designation_id:
+        type: integer
+      experience_years:
+        type: integer
+      id:
+        type: string
+      interview_rounds:
+        type: integer
+      level:
+        type: string
+      location:
+        type: string
+      location_ids:
+        items:
+          type: string
+        type: array
+      location_type:
+        type: string
+      normalized_inr_amount:
+        type: number
+      notice_periods:
+        items:
+          type: string
+        type: array
+      posted_at:
+        type: string
+      recruiter_actions:
+        type: integer
+      relocation:
+        type: string
+      salary_hidden:
+        type: boolean
+      salary_max:
+        type: number
+      salary_min:
+        type: number
+      skill_ids:
+        items:
+          type: integer
+        type: array
+      skills:
+        description: names, same order as skill_ids
+        items:
+          type: string
+        type: array
+      summary:
+        type: string
+      tier:
+        type: string
+      title:
+        type: string
+      views:
+        type: integer
+      work_modes:
+        items:
+          type: string
+        type: array
+      work_types:
+        items:
+          type: string
+        type: array
+    type: object
+  jobs.Person:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+    type: object
+  jobs.PostInput:
+    properties:
+      application:
+        description: Easy apply | External
+        type: string
+      company_name:
+        description: shown when there is no linked company
+        type: string
+      company_slug:
+        description: 'paid: an approved company of the poster'
+        type: string
+      currency:
+        type: string
+      description:
+        type: string
+      designation:
+        description: job title; becomes a designation term
+        type: string
+      external_url:
+        type: string
+      hide_salary:
+        type: boolean
+      interview_stages:
+        items:
+          type: string
+        type: array
+      location_ids:
+        items:
+          type: string
+        type: array
+      min_experience:
+        type: integer
+      notice_periods:
+        items:
+          type: string
+        type: array
+      payment_method:
+        description: 'paid: company_credits | out_of_pocket'
+        type: string
+      relocation:
+        type: string
+      salary_max:
+        type: number
+      skills:
+        description: skill names; become skill terms
+        items:
+          type: string
+        type: array
+      tier:
+        type: string
+      work_modes:
+        items:
+          type: string
+        type: array
+      work_types:
+        items:
+          type: string
+        type: array
+      worldwide_remote:
+        type: boolean
+    type: object
+  jobs.Posted:
+    properties:
+      applications:
+        type: integer
+      company_name:
+        type: string
+      company_slug:
+        type: string
+      id:
+        type: string
+      posted_at:
+        type: string
+      share_hash:
+        type: string
+      status:
+        type: string
+      tier:
+        type: string
+      title:
+        type: string
+      views:
+        type: integer
+    type: object
+  jobs.PosterCompany:
+    properties:
+      branch_location_ids:
+        items:
+          type: string
+        type: array
+      hq_location_id:
+        type: string
+      name:
+        type: string
+      role:
+        type: string
+      slug:
+        type: string
+    type: object
+  jobs.SearchCriteria:
+    properties:
+      application_methods:
+        items:
+          type: string
+        type: array
+      benefits:
+        items:
+          type: string
+        type: array
+      categories:
+        items:
+          type: string
+        type: array
+      company:
+        description: 'company slug: its jobs tab'
+        type: string
+      company_sizes:
+        items:
+          type: string
+        type: array
+      designations:
+        description: designation term ids
+        items:
+          type: integer
+        type: array
+      industries:
+        items:
+          type: string
+        type: array
+      interview_rounds:
+        type: integer
+      interview_rounds_exact:
+        description: false = "at most N rounds"
+        type: boolean
+      job_ids:
+        description: restrict to these ids, e.g. the user's saved jobs
+        items:
+          type: string
+        type: array
+      levels:
+        items:
+          type: string
+        type: array
+      location_ids:
+        description: leaf city ids, flattened from the tristate tree by the client
+        items:
+          type: string
+        type: array
+      location_text:
+        description: free-text location ("Bengaluru", "remote")
+        type: string
+      max_experience:
+        type: integer
+      max_salary_inr:
+        type: number
+      min_experience:
+        type: integer
+      min_salary_inr:
+        description: client converts the user's currency with rates.json
+        type: number
+      notice_periods:
+        items:
+          type: string
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      posted_within_days:
+        type: integer
+      query:
+        description: |-
+          Query matches job titles only (requirements: job search is by
+          designation/title, never description text).
+        type: string
+      recruiter_id:
+        description: a recruiter's open jobs
+        type: string
+      relocation:
+        items:
+          type: string
+        type: array
+      skills:
+        description: skill term ids
+        items:
+          type: integer
+        type: array
+      sort:
+        type: string
+      tiers:
+        items:
+          type: string
+        type: array
+      work_modes:
+        items:
+          type: string
+        type: array
+      work_types:
+        items:
+          type: string
+        type: array
+      worldwide_remote:
+        type: boolean
+    type: object
+  jobs.SearchResult:
+    properties:
+      jobs:
+        items:
+          $ref: '#/definitions/jobs.Job'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  profiles.Analytics:
+    properties:
+      daily:
+        description: one entry per day, oldest first
+        items:
+          $ref: '#/definitions/profiles.AnalyticsDay'
+        type: array
+      from:
+        description: first and last day of the period, IST
+        type: string
+      growth:
+        $ref: '#/definitions/profiles.Growth'
+      peak_day:
+        description: nil when the period had no activity
+        type: string
+      to:
+        type: string
+      totals:
+        $ref: '#/definitions/profiles.Metrics'
+      view_sources:
+        $ref: '#/definitions/profiles.ViewSources'
+    type: object
+  profiles.AnalyticsDay:
+    properties:
+      date:
+        description: IST, yyyy-mm-dd
+        type: string
+      profile_views:
+        type: integer
+      resume_downloads:
+        type: integer
+      resume_views:
+        type: integer
+    type: object
+  profiles.Authorization:
+    properties:
+      country:
+        type: string
+      from:
+        type: string
+      indefinite:
+        type: boolean
+      type:
+        type: string
+      until:
+        type: string
+    type: object
+  profiles.Education:
+    properties:
+      degree:
+        type: string
+      end:
+        type: string
+      field:
+        type: string
+      institution:
+        type: string
+      start:
+        type: string
+    type: object
+  profiles.Experience:
+    properties:
+      company:
+        type: string
+      company_slug:
+        type: string
+      current:
+        type: boolean
+      description:
+        type: string
+      end:
+        description: YYYY-MM, "" while current
+        type: string
+      promoted:
+        type: boolean
+      start:
+        description: YYYY-MM
+        type: string
+      title:
+        type: string
+      type:
+        type: string
+      verification:
+        type: string
+    type: object
+  profiles.Growth:
+    properties:
+      profile_views:
+        type: number
+      resume_downloads:
+        type: number
+      resume_views:
+        type: number
+    type: object
+  profiles.Language:
+    properties:
+      name:
+        type: string
+      proficiency:
+        type: string
+    type: object
+  profiles.Metrics:
+    properties:
+      profile_views:
+        type: integer
+      resume_downloads:
+        type: integer
+      resume_views:
+        type: integer
+    type: object
+  profiles.Profile:
+    properties:
+      about:
+        type: string
+      about_updated:
+        description: read-only
+        type: string
+      authorizations:
+        items:
+          $ref: '#/definitions/profiles.Authorization'
+        type: array
+      contact_private:
+        type: boolean
+      current_salary:
+        type: number
+      current_salary_private:
+        type: boolean
+      education:
+        items:
+          $ref: '#/definitions/profiles.Education'
+        type: array
+      email:
+        type: string
+      expected_salary:
+        type: number
+      experience_years:
+        type: integer
+      experiences:
+        items:
+          $ref: '#/definitions/profiles.Experience'
+        type: array
+      gender:
+        type: string
+      hourly_private:
+        type: boolean
+      hourly_rate:
+        type: number
+      is_serving_notice:
+        type: boolean
+      languages:
+        items:
+          $ref: '#/definitions/profiles.Language'
+        type: array
+      last_working_date:
+        description: YYYY-MM-DD or ""
+        type: string
+      location:
+        type: string
+      name:
+        type: string
+      notice:
+        type: string
+      open:
+        type: boolean
+      open_to_remote:
+        type: boolean
+      phone:
+        type: string
+      photo:
+        description: 'read-only: set with PUT /profile/me/photo'
+        type: string
+      preferred_locations:
+        items:
+          type: string
+        type: array
+      projects:
+        items:
+          $ref: '#/definitions/profiles.Project'
+        type: array
+      pronouns:
+        type: string
+      relocation:
+        type: string
+      resume_private:
+        type: boolean
+      salary_currency:
+        type: string
+      salary_private:
+        type: boolean
+      saved:
+        description: 'read-only: false for a starter profile not yet stored'
+        type: boolean
+      skill_groups:
+        items:
+          $ref: '#/definitions/profiles.SkillGroup'
+        type: array
+      skills:
+        description: 'read-only on save: every skill, in display order'
+        items:
+          type: string
+        type: array
+      slug:
+        type: string
+      social_links:
+        items:
+          $ref: '#/definitions/profiles.SocialLink'
+        type: array
+      target_roles:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      visible:
+        type: boolean
+      website:
+        description: portfolio display name, e.g. "asha.design"
+        type: string
+      work_mode:
+        type: string
+      work_types:
+        items:
+          type: string
+        type: array
+    type: object
+  profiles.Project:
+    properties:
+      description:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+      title:
+        type: string
+      url:
+        type: string
+    type: object
+  profiles.SkillGroup:
+    properties:
+      name:
+        type: string
+      skills:
+        items:
+          type: string
+        type: array
+    type: object
+  profiles.SkillRef:
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+    type: object
+  profiles.SkillSet:
+    properties:
+      changed:
+        type: boolean
+      signature:
+        type: string
+      skills:
+        items:
+          $ref: '#/definitions/profiles.SkillRef'
+        type: array
+    type: object
+  profiles.SocialLink:
+    properties:
+      platform:
+        type: string
+      url:
+        type: string
+    type: object
+  profiles.ViewSources:
+    properties:
+      direct:
+        description: '"Direct Impressions"'
+        type: integer
+      search:
+        description: '"Recruiter Searches"'
+        type: integer
+    type: object
+  reference.ManifestEntry:
+    properties:
+      file:
+        type: string
+      sha256:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  reference.Term:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: integer
+      merged_into:
+        type: integer
+      name:
+        type: string
+      status:
+        type: string
+      uses:
+        description: Uses is how many jobs reference the term (admin list only).
+        type: integer
+    type: object
+  reference.TermPage:
+    properties:
+      page:
+        type: integer
+      page_size:
+        type: integer
+      terms:
+        items:
+          $ref: '#/definitions/reference.Term'
+        type: array
+      total:
+        type: integer
+    type: object
+  settings.PublicSettings:
+    properties:
+      apply_fee_paise:
+        type: integer
+      daily_free_applications:
+        type: integer
+      job_post_fee_paise:
+        type: integer
+      match_sort_fee_paise:
+        type: integer
+    type: object
+  settings.Settings:
+    properties:
+      apply_fee_paise:
+        type: integer
+      daily_free_applications:
+        type: integer
+      fx_refresh_time:
+        description: HH:MM, IST
+        type: string
+      job_post_fee_paise:
+        type: integer
+      match_sort_fee_paise:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+info:
+  contact: {}
+  title: Referise Backend API
+  version: 1.1.0
+paths:
+  /api/v1/admin/fx/refresh:
+    post:
+      operationId: refreshRates
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Refresh exchange rates now (runs in the background)
+      tags:
+      - admin
+  /api/v1/admin/settings:
+    get:
+      operationId: getSettings
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/settings.Settings'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: All platform settings
+      tags:
+      - admin
+    put:
+      consumes:
+      - application/json
+      operationId: updateSettings
+      parameters:
+      - description: All settings
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/settings.Settings'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/settings.Settings'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Replace the platform settings
+      tags:
+      - admin
+  /api/v1/admin/taxonomy/{kind}:
+    get:
+      operationId: listTerms
+      parameters:
+      - description: skills or designations
+        in: path
+        name: kind
+        required: true
+        type: string
+      - description: Term status
+        in: query
+        name: status
+        type: string
+      - description: Page
+        in: query
+        name: page
+        type: integer
+      - description: Page size
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/reference.TermPage'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Taxonomy review queue
+      tags:
+      - admin
+  /api/v1/admin/taxonomy/{kind}/{id}:
+    delete:
+      operationId: deleteTerm
+      parameters:
+      - description: skills or designations
+        in: path
+        name: kind
+        required: true
+        type: string
+      - description: Term id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Reject (delete) a term and its aliases
+      tags:
+      - admin
+    patch:
+      consumes:
+      - application/json
+      operationId: updateTerm
+      parameters:
+      - description: skills or designations
+        in: path
+        name: kind
+        required: true
+        type: string
+      - description: Term id
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Fields to change
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.termUpdate'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/reference.Term'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Rename or approve a term
+      tags:
+      - admin
+  /api/v1/admin/taxonomy/{kind}/merge:
+    post:
+      consumes:
+      - application/json
+      operationId: mergeTerms
+      parameters:
+      - description: skills or designations
+        in: path
+        name: kind
+        required: true
+        type: string
+      - description: Sources and master
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.mergeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Merge terms into a master term
+      tags:
+      - admin
+  /api/v1/applications:
+    get:
+      operationId: getMyApplications
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.Application'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Application history
+      tags:
+      - applications
+    post:
+      consumes:
+      - application/json
+      operationId: easyApply
+      parameters:
+      - description: Job to apply to
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.jobRef'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.Application'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "402":
+          description: Payment Required
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Easy Apply to a job
+      tags:
+      - applications
+  /api/v1/applications/bulk:
+    post:
+      consumes:
+      - application/json
+      operationId: bulkApply
+      parameters:
+      - description: Jobs; dry_run only checks
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.bulkApplyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.BulkResult'
+              type: object
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.BulkResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "402":
+          description: Payment Required
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Apply to several jobs at once (200 on dry_run, 201 otherwise)
+      tags:
+      - applications
+  /api/v1/applications/external:
+    post:
+      consumes:
+      - application/json
+      operationId: confirmExternalApplication
+      parameters:
+      - description: The External job
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.jobRef'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.Application'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Record Yes-I-applied for an External job
+      tags:
+      - applications
+  /api/v1/applications/quota:
+    get:
+      operationId: getApplyQuota
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.Quota'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Today's free Easy Apply quota
+      tags:
+      - applications
+  /api/v1/assets/{file}:
+    get:
+      operationId: getAsset
+      parameters:
+      - description: File name from the manifest
+        in: path
+        name: file
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: One reference file (immutable)
+      tags:
+      - reference
+  /api/v1/assets/manifest:
+    get:
+      operationId: getAssetManifest
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  additionalProperties:
+                    $ref: '#/definitions/reference.ManifestEntry'
+                  type: object
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Current reference file per kind
+      tags:
+      - reference
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  additionalProperties:
+                    type: string
+                  type: object
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: End the session
+      tags:
+      - auth
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentUser
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/auth.SessionResponse'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Current user for the session
+      tags:
+      - auth
+  /api/v1/auth/session:
+    post:
+      consumes:
+      - application/json
+      operationId: createSession
+      parameters:
+      - description: Code from IAM's redirect
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/auth.SessionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            Set-Cookie:
+              description: jp_session=<id>; HttpOnly; SameSite=Lax
+              type: string
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/auth.SessionResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Exchange the IAM login code for a session
+      tags:
+      - auth
+  /api/v1/auth/token:
+    get:
+      operationId: getIamAccessToken
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/auth.AccessTokenResponse'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Current IAM access token (frontend server only)
+      tags:
+      - auth
+  /api/v1/companies:
+    post:
+      consumes:
+      - application/json
+      operationId: createCompany
+      parameters:
+      - description: The company
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/companies.Input'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Company'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Create a company
+      tags:
+      - companies
+  /api/v1/companies/{slug}:
+    delete:
+      operationId: deleteCompany
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Delete the company
+      tags:
+      - companies
+    get:
+      operationId: getCompany
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Company'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Company page (session optional)
+      tags:
+      - companies
+    put:
+      consumes:
+      - application/json
+      operationId: updateCompany
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: The company
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/companies.Input'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Company'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Update the whole company page
+      tags:
+      - companies
+  /api/v1/companies/{slug}/banner:
+    put:
+      consumes:
+      - image/jpeg
+      - image/png
+      - image/webp
+      operationId: setCompanyBanner
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Raw image bytes
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Company'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Upload the company banner
+      tags:
+      - companies
+  /api/v1/companies/{slug}/dashboard:
+    get:
+      operationId: getCompanyDashboard
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Dashboard'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Company admin dashboard counts
+      tags:
+      - companies
+  /api/v1/companies/{slug}/leave:
+    post:
+      operationId: leaveCompany
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Leave the company
+      tags:
+      - companies
+  /api/v1/companies/{slug}/logo:
+    put:
+      consumes:
+      - image/jpeg
+      - image/png
+      - image/webp
+      operationId: setCompanyLogo
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Raw image bytes
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.Company'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Upload the company logo
+      tags:
+      - companies
+  /api/v1/companies/{slug}/members:
+    get:
+      operationId: getCompanyMembers
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: pending, current (default), past or rejected
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/companies.Member'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Company members and membership requests
+      tags:
+      - companies
+  /api/v1/companies/{slug}/members/{user_id}:
+    patch:
+      consumes:
+      - application/json
+      operationId: setMemberRole
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Member user id
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: admin, hr or employee
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.roleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Change a member's role
+      tags:
+      - companies
+  /api/v1/companies/{slug}/members/{user_id}/approve:
+    post:
+      operationId: approveMember
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Member user id
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Approve (verify) a membership request
+      tags:
+      - companies
+  /api/v1/companies/{slug}/members/{user_id}/offboard:
+    post:
+      operationId: offboardMember
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Member user id
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Move a member to past employees
+      tags:
+      - companies
+  /api/v1/companies/{slug}/members/{user_id}/reject:
+    post:
+      operationId: rejectMember
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Member user id
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Reject a membership request
+      tags:
+      - companies
+  /api/v1/companies/search:
+    post:
+      consumes:
+      - application/json
+      operationId: searchCompanies
+      parameters:
+      - description: Filters
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/companies.SearchCriteria'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/companies.SearchResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Search companies
+      tags:
+      - companies
+  /api/v1/companies/slug-availability:
+    get:
+      operationId: checkCompanySlug
+      parameters:
+      - description: Slug to check
+        in: query
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/inbound.slugAvailability'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Is a company slug free?
+      tags:
+      - companies
+  /api/v1/files/img/{name}:
+    get:
+      operationId: getImage
+      parameters:
+      - description: File name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - image/jpeg
+      - image/png
+      - image/webp
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: An uploaded image (profile photo, logo, banner)
+      tags:
+      - companies
+  /api/v1/jobs/{id}:
+    get:
+      operationId: getJob
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Detail'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Job page (session optional)
+      tags:
+      - jobs
+  /api/v1/jobs/{id}/outbound:
+    post:
+      operationId: recordOutboundClick
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Record an external-apply click
+      tags:
+      - jobs
+  /api/v1/jobs/search:
+    post:
+      consumes:
+      - application/json
+      operationId: searchJobs
+      parameters:
+      - description: Consolidated filters
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/jobs.SearchCriteria'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.SearchResult'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Search public job listings (session optional)
+      tags:
+      - jobs
+  /api/v1/jobs/share/{hash}:
+    get:
+      operationId: getSharedJob
+      parameters:
+      - description: Share hash
+        in: path
+        name: hash
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Detail'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Job page by share link (session optional)
+      tags:
+      - jobs
+  /api/v1/profile/me:
+    get:
+      operationId: getMyProfile
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: The signed-in user's full profile
+      tags:
+      - profiles
+    put:
+      consumes:
+      - application/json
+      operationId: saveMyProfile
+      parameters:
+      - description: The whole profile document
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/profiles.Profile'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Save the whole profile
+      tags:
+      - profiles
+  /api/v1/profile/me/experiences/{index}/verification:
+    post:
+      operationId: requestExperienceVerification
+      parameters:
+      - description: Experience position, from 0
+        in: path
+        name: index
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Ask the experience's company to verify it
+      tags:
+      - profiles
+  /api/v1/profile/me/photo:
+    put:
+      consumes:
+      - image/jpeg
+      - image/png
+      - image/webp
+      operationId: setMyPhoto
+      parameters:
+      - description: Raw image bytes
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "413":
+          description: Request Entity Too Large
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "415":
+          description: Unsupported Media Type
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Upload the profile photo
+      tags:
+      - profiles
+  /api/v1/profile/me/skills:
+    get:
+      operationId: syncMySkills
+      parameters:
+      - description: Signature of the cached list; only the signature returns when
+          it matches
+        in: query
+        name: signature
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.SkillSet'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Sync the client's cached skill list
+      tags:
+      - profiles
+    post:
+      consumes:
+      - application/json
+      operationId: addMySkill
+      parameters:
+      - description: Skill to add
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.skillRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.SkillSet'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: One-click add of an existing skill
+      tags:
+      - profiles
+  /api/v1/profile/me/skills/{id}:
+    delete:
+      operationId: removeMySkill
+      parameters:
+      - description: Skill term id
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.SkillSet'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Remove a skill from the profile
+      tags:
+      - profiles
+  /api/v1/profiles/{slug}:
+    get:
+      operationId: getPublicProfile
+      parameters:
+      - description: Profile slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: search marks a view from search; anything else counts as direct
+        in: query
+        name: src
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Public profile (session optional)
+      tags:
+      - profiles
+  /api/v1/profiles/{slug}/analytics:
+    get:
+      operationId: getProfileAnalytics
+      parameters:
+      - description: Profile slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Analytics'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Profile Activity & Analytics
+      tags:
+      - profiles
+  /api/v1/recruiter/applications/{id}:
+    patch:
+      consumes:
+      - application/json
+      operationId: setApplicationStage
+      parameters:
+      - description: Application id (uuid)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New stage
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.stageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.Applicant'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Move an applicant to another stage
+      tags:
+      - applications
+  /api/v1/recruiter/companies:
+    get:
+      operationId: getPosterCompanies
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/jobs.PosterCompany'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Companies the user may post under
+      tags:
+      - recruiting
+  /api/v1/recruiter/drafts:
+    get:
+      operationId: getDrafts
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/jobs.Draft'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: The user's post-a-job drafts
+      tags:
+      - recruiting
+    post:
+      consumes:
+      - application/json
+      operationId: createDraft
+      parameters:
+      - description: Unvalidated form state, at most 64 KB
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.draftRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Draft'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Save a new draft
+      tags:
+      - recruiting
+  /api/v1/recruiter/drafts/{id}:
+    delete:
+      operationId: deleteDraft
+      parameters:
+      - description: Draft id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Delete a draft
+      tags:
+      - recruiting
+    put:
+      consumes:
+      - application/json
+      operationId: updateDraft
+      parameters:
+      - description: Draft id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Unvalidated form state, at most 64 KB
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.draftRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Draft'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Overwrite a draft
+      tags:
+      - recruiting
+  /api/v1/recruiter/jobs:
+    get:
+      operationId: getMyPostedJobs
+      parameters:
+      - description: active, closed or expired
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/jobs.Posted'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Jobs the user posted
+      tags:
+      - recruiting
+    post:
+      consumes:
+      - application/json
+      operationId: postJob
+      parameters:
+      - description: The job
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/jobs.PostInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Detail'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "402":
+          description: Payment Required
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Publish a job
+      tags:
+      - recruiting
+  /api/v1/recruiter/jobs/{id}:
+    put:
+      consumes:
+      - application/json
+      operationId: editJob
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: The job
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/jobs.PostInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Detail'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Edit a job (tier, company and payment stay)
+      tags:
+      - recruiting
+  /api/v1/recruiter/jobs/{id}/applications:
+    get:
+      operationId: getApplicants
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Pipeline stage
+        in: query
+        name: stage
+        type: string
+      - description: Minimum match score %
+        in: query
+        name: min_match
+        type: integer
+      - description: recent or match
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.Applicant'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Applicants for a job
+      tags:
+      - applications
+  /api/v1/recruiter/jobs/{id}/close:
+    post:
+      operationId: closeJob
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Close a job
+      tags:
+      - recruiting
+  /api/v1/recruiter/jobs/{id}/repost:
+    post:
+      operationId: repostJob
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Repost a job for another 30 days
+      tags:
+      - recruiting
+  /api/v1/recruiters/{id}:
+    get:
+      operationId: getRecruiter
+      parameters:
+      - description: Recruiter user id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/inbound.recruiterCard'
+              type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Public recruiter card
+      tags:
+      - recruiting
+  /api/v1/saved-jobs:
+    delete:
+      operationId: clearAppliedSavedJobs
+      parameters:
+      - description: Must be true
+        in: query
+        name: applied
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.SavedJob'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Clear applied jobs from the saved list
+      tags:
+      - saved-jobs
+    get:
+      operationId: getSavedJobs
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.SavedJob'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Saved jobs, newest first
+      tags:
+      - saved-jobs
+  /api/v1/saved-jobs/{job_id}:
+    delete:
+      operationId: unsaveJob
+      parameters:
+      - description: Job id
+        in: path
+        name: job_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.SavedJob'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Unsave a job
+      tags:
+      - saved-jobs
+    put:
+      operationId: saveJob
+      parameters:
+      - description: Job id
+        in: path
+        name: job_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.SavedJob'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Save a job
+      tags:
+      - saved-jobs
+  /api/v1/saved-jobs/remove:
+    post:
+      consumes:
+      - application/json
+      operationId: unsaveJobs
+      parameters:
+      - description: Jobs to unsave
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.jobIDsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/applications.SavedJob'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Unsave several jobs
+      tags:
+      - saved-jobs
+  /api/v1/settings:
+    get:
+      operationId: getPublicSettings
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/settings.PublicSettings'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Public limits and prices
+      tags:
+      - settings
+  /healthz:
+    get:
+      operationId: liveness
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Liveness probe
+      tags:
+      - health
+  /readyz:
+    get:
+      operationId: readiness
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Readiness probe (database ping)
+      tags:
+      - health
+securityDefinitions:
+  sessionCookie:
+    in: cookie
+    name: jp_session
+    type: apiKey
+swagger: "2.0"

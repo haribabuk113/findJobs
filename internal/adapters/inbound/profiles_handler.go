@@ -44,18 +44,41 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser
 	api.GET("/profiles/:slug/analytics", h.Analytics)
 }
 
+type skillRequest struct {
+	SkillID int64 `json:"skill_id"`
+}
+
 // Skills handles GET /profile/me/skills?signature=...: only the signature
 // comes back when it matches, the full list otherwise.
+//
+//	@Summary	Sync the client's cached skill list
+//	@ID			syncMySkills
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		signature	query	string	false	"Signature of the cached list; only the signature returns when it matches"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.SkillSet}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/skills [get]
 func (h *ProfileHandler) Skills(ctx *gin.Context) {
 	set, err := h.service.Skills(ctx, ctx.GetString(userIDKey), ctx.Query("signature"))
 	h.respond(ctx, http.StatusOK, "Skills retrieved successfully", set, err)
 }
 
 // AddSkill handles POST /profile/me/skills with {"skill_id": n}.
+//
+//	@Summary	One-click add of an existing skill
+//	@ID			addMySkill
+//	@Tags		profiles
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	skillRequest	true	"Skill to add"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.SkillSet}
+//	@Failure	400,401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/skills [post]
 func (h *ProfileHandler) AddSkill(ctx *gin.Context) {
-	var in struct {
-		SkillID int64 `json:"skill_id"`
-	}
+	var in skillRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil || in.SkillID <= 0 {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give a skill_id"))
 		return
@@ -65,6 +88,16 @@ func (h *ProfileHandler) AddSkill(ctx *gin.Context) {
 }
 
 // RemoveSkill handles DELETE /profile/me/skills/:id.
+//
+//	@Summary	Remove a skill from the profile
+//	@ID			removeMySkill
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		id	path	int	true	"Skill term id"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.SkillSet}
+//	@Failure	401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/skills/{id} [delete]
 func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
 	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
@@ -76,12 +109,32 @@ func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
 }
 
 // Mine handles GET /profile/me (a starter with saved=false before the first save).
+//
+//	@Summary	The signed-in user's full profile
+//	@ID			getMyProfile
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	401,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me [get]
 func (h *ProfileHandler) Mine(ctx *gin.Context) {
 	p, err := h.service.Mine(ctx, ctx.GetString(userIDKey))
 	h.respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
 }
 
 // Save handles PUT /profile/me: the whole profile document.
+//
+//	@Summary	Save the whole profile
+//	@ID			saveMyProfile
+//	@Tags		profiles
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	domainprofiles.Profile	true	"The whole profile document"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	400,401,409,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me [put]
 func (h *ProfileHandler) Save(ctx *gin.Context) {
 	var in domainprofiles.Profile
 	if err := ctx.ShouldBindJSON(&in); err != nil {
@@ -93,6 +146,17 @@ func (h *ProfileHandler) Save(ctx *gin.Context) {
 }
 
 // Photo handles PUT /profile/me/photo with a raw image body.
+//
+//	@Summary	Upload the profile photo
+//	@ID			setMyPhoto
+//	@Tags		profiles
+//	@Accept		image/jpeg,image/png,image/webp
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	string	true	"Raw image bytes"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	400,401,413,415,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/photo [put]
 func (h *ProfileHandler) Photo(ctx *gin.Context) {
 	data, err := io.ReadAll(ctx.Request.Body)
 	var tooBig *http.MaxBytesError
@@ -109,6 +173,16 @@ func (h *ProfileHandler) Photo(ctx *gin.Context) {
 }
 
 // RequestVerification handles POST /profile/me/experiences/:index/verification.
+//
+//	@Summary	Ask the experience's company to verify it
+//	@ID			requestExperienceVerification
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		index	path	int	true	"Experience position, from 0"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	400,401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/experiences/{index}/verification [post]
 func (h *ProfileHandler) RequestVerification(ctx *gin.Context) {
 	index, err := strconv.Atoi(ctx.Param("index"))
 	if err != nil || index < 0 || index >= domainprofiles.MaxExperiences {
@@ -123,6 +197,16 @@ func (h *ProfileHandler) RequestVerification(ctx *gin.Context) {
 // private). Each successful load counts as a profile view (non-unique;
 // bots and the owner aren't counted). src=search marks views from the
 // platform's search and discovery pages; anything else counts as direct.
+//
+//	@Summary	Public profile (session optional)
+//	@ID			getPublicProfile
+//	@Tags		profiles
+//	@Produce	json
+//	@Param		slug	path	string	true	"Profile slug"
+//	@Param		src	query	string	false	"search marks a view from search; anything else counts as direct"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	404,500	{object}	adapters.Response
+//	@Router		/api/v1/profiles/{slug} [get]
 func (h *ProfileHandler) Public(ctx *gin.Context) {
 	p, err := h.service.Public(ctx, ctx.Param("slug"))
 	if err == nil {
@@ -133,6 +217,15 @@ func (h *ProfileHandler) Public(ctx *gin.Context) {
 
 // Analytics handles GET /profiles/:slug/analytics: the public Activity &
 // Analytics tab, aggregates only (404 when missing or private).
+//
+//	@Summary	Profile Activity & Analytics
+//	@ID			getProfileAnalytics
+//	@Tags		profiles
+//	@Produce	json
+//	@Param		slug	path	string	true	"Profile slug"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Analytics}
+//	@Failure	404,500	{object}	adapters.Response
+//	@Router		/api/v1/profiles/{slug}/analytics [get]
 func (h *ProfileHandler) Analytics(ctx *gin.Context) {
 	a, err := h.analytics.Analytics(ctx, ctx.Param("slug"))
 	h.respond(ctx, http.StatusOK, "Profile analytics retrieved successfully", a, err)

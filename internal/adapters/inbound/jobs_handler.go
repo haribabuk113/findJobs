@@ -28,6 +28,16 @@ func RegisterJobRoutes(rg *gin.RouterGroup, handler *JobsHandler, optionalUser g
 }
 
 // Search handles POST /jobs/search with the consolidated filter payload.
+//
+//	@Summary	Search public job listings (session optional)
+//	@ID			searchJobs
+//	@Tags		jobs
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body	domainjobs.SearchCriteria	true	"Consolidated filters"
+//	@Success	200	{object}	adapters.Response{data=domainjobs.SearchResult}
+//	@Failure	400,500	{object}	adapters.Response
+//	@Router		/api/v1/jobs/search [post]
 func (h *JobsHandler) Search(ctx *gin.Context) {
 	var criteria domainjobs.SearchCriteria
 	if err := ctx.ShouldBindJSON(&criteria); err != nil {
