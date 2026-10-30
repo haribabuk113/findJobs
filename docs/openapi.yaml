@@ -1,0 +1,2495 @@
+openapi: 3.1.0
+info:
+  title: Referise Backend API
+  version: 1.1.0
+  license:
+    name: Proprietary
+  description: |
+    Contract between the Referise frontend and backend. This file is the
+    source of truth for the API; it is written from the handlers in `internal/adapters/inbound`
+    and the types in `internal/domain`.
+
+    **Who calls this API.** The SvelteKit server (not the browser) calls these endpoints
+    and forwards the user's `jp_session` cookie. The browser only ever talks to the
+    SvelteKit app on its own origin.
+
+    **Response envelope.** Every JSON response — success or error — uses the same envelope:
+    `{status, message, error, data}`. Switch on the HTTP status; `error` is one short,
+    human-readable reason and never contains internal details (stack traces, SQL, IAM errors).
+    There are no machine error codes and no per-field error map. Two endpoints return raw
+    bytes instead of the envelope: `GET /assets/{file}` and `GET /files/img/{name}`.
+
+    **Authentication.** Sign-in happens at the central IAM service. IAM redirects the browser
+    back with a one-time `code`; the frontend server posts it to `POST /auth/session`, which
+    returns the `jp_session` cookie. IAM tokens never leave the backend (except `GET /auth/token`,
+    meant for the frontend *server* only).
+
+    **Request bodies** must be `application/json` (415 otherwise) and at most 1 MB. Image
+    uploads are the exception: a raw `image/jpeg`, `image/png` or `image/webp` body.
+
+    **Rate limit.** Per client IP; over the limit returns 429 with `Retry-After: 60`.
+    The health probes are not rate limited.
+
+    **Ids.** Skill and designation term ids are integers. Location ids are GeoNames ids sent
+    as strings (`"1277333"` = Bengaluru). Users, applications and drafts use UUIDs.
+
+    **Timestamps** are ISO 8601 / RFC 3339 with an IST offset (`+05:30`). Dates are `YYYY-MM-DD`.
+servers:
+  - url: http://localhost:8081/api/v1
+    description: Local docker compose
+security:
+  - sessionCookie: []
+tags:
+  - name: auth
+    description: Session management on top of the central IAM service.
+  - name: profiles
+    description: Candidate profile (one document), public profile and profile analytics.
+  - name: jobs
+    description: Public job search and job pages.
+  - name: recruiting
+    description: Posting and managing jobs, drafts, recruiter cards.
+  - name: applications
+    description: Applying to jobs, the daily quota and the recruiter's applicant pipeline.
+  - name: saved-jobs
+    description: The candidate's saved jobs.
+  - name: companies
+    description: Company pages, membership (employment verification) and images.
+  - name: reference
+    description: Published reference files (skills, designations, locations, exchange rates).
+  - name: admin
+    description: Platform-admin tools (taxonomy review, settings, exchange rates).
+  - name: settings
+    description: Public platform limits and prices.
+  - name: health
+    description: Liveness and readiness probes (served at the root, outside /api/v1).
+
+paths:
+  # ---------------------------------------------------------------- auth
+  /auth/session:
+    post:
+      tags: [auth]
+      operationId: createSession
+      summary: Exchange the IAM login code for a session
+      security: []
+      description: |
+        Call from the server-side handler of IAM's redirect (`/auth/callback?code=...`).
+        The code is single-use and short-lived. The body must be `application/json`
+        (an HTML form post is rejected with 415, which blocks login CSRF).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SessionRequest'}
+      responses:
+        '200':
+          description: Session created (`Session created successfully`). `Set-Cookie` carries the new `jp_session`.
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/SetSessionCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401':
+          description: Code invalid, expired, already used, or the account is suspended.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/me:
+    get:
+      tags: [auth]
+      operationId: getCurrentUser
+      summary: Current user for the session
+      description: |
+        Returns the signed-in user, their company memberships and whether they are a platform
+        admin. When the IAM access token behind the session has expired the backend refreshes
+        it transparently; if IAM refuses (session revoked, expired, or account suspended) the
+        session is deleted, the cookie is cleared and 401 is returned.
+      responses:
+        '200':
+          description: Signed in (`User retrieved successfully`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/token:
+    get:
+      tags: [auth]
+      operationId: getIamAccessToken
+      summary: Current IAM access token (server-side use only)
+      description: |
+        Returns a valid IAM access token for this session (refreshed if needed) so the
+        frontend **server** can call IAM as the user. Never forward it to the browser.
+        Responses carry `Cache-Control: no-store`.
+      responses:
+        '200':
+          description: Token for this session (`Token retrieved successfully`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccessTokenEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: End the session
+      description: |
+        Clears the cookie, deletes the session and revokes the IAM session behind it.
+        Idempotent: calling it without a cookie, or twice, still returns 200.
+      security:
+        - sessionCookie: []
+        - {}
+      responses:
+        '200':
+          description: Signed out (`Logged out successfully`).
+          headers:
+            Set-Cookie: {$ref: '#/components/headers/ClearSessionCookie'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogoutEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- profiles
+  /profile/me:
+    get:
+      tags: [profiles]
+      operationId: getMyProfile
+      summary: The signed-in user's full profile
+      description: |
+        Includes private values. Before the first save it returns an unsaved starter
+        (`saved: false`) built from the IAM account, never a 404: a suggested slug, the
+        account name and email, `INR`, and every privacy flag on.
+      responses:
+        '200':
+          description: '`Profile retrieved successfully`. `Cache-Control: private, no-store`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      tags: [profiles]
+      operationId: saveMyProfile
+      summary: Save the whole profile
+      description: |
+        The body is the whole profile document; it replaces the stored profile in one
+        transaction. Read-only fields are ignored: `saved`, `photo`, `about_updated`, `skills`,
+        `experiences[].verification`, `experiences[].company_slug`.
+
+        Skill names in `skill_groups` and designation names in `target_roles` that don't
+        exist yet are created as pending terms and go live at once. An experience whose
+        `company` matches a registered company's name (case-insensitive) is linked to it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Profile'}
+      responses:
+        '200':
+          description: The saved profile (`Profile saved successfully`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409':
+          description: The slug is taken by someone else (`that profile handle is taken`). No auto-suffixing.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profile/me/photo:
+    put:
+      tags: [profiles]
+      operationId: setMyPhoto
+      summary: Upload the profile photo
+      description: |
+        A raw image body, not multipart, at most 1 MB. The bytes must match the declared
+        type; SVG is never accepted. The old file is deleted. Removing a photo isn't supported.
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, format: binary}}
+          image/png: {schema: {type: string, format: binary}}
+          image/webp: {schema: {type: string, format: binary}}
+      responses:
+        '200':
+          description: The profile with the new `photo` URL (`Photo updated successfully`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profile/me/experiences/{index}/verification:
+    post:
+      tags: [profiles]
+      operationId: requestExperienceVerification
+      summary: Ask the experience's company to verify it
+      description: |
+        Sends a pending membership request to the company linked to the experience at
+        `index` (0-based). Also re-requests after a rejection. The verification status on
+        `experiences[].verification` is derived from that membership.
+      parameters:
+        - {name: index, in: path, required: true, schema: {type: integer, minimum: 0, maximum: 49}}
+      responses:
+        '200':
+          description: The profile (`Verification requested`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileEnvelope'}
+        '400':
+          description: The experience's company isn't registered on the platform.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profile/me/skills:
+    get:
+      tags: [profiles]
+      operationId: syncMySkills
+      summary: Sync the client's cached skill list
+      description: |
+        Send the signature the client has cached. A matching signature returns only
+        `{signature, changed: false}`; otherwise the full list comes back. The signature is a
+        hash of the sorted skill ids, so reordering or regrouping doesn't change it.
+      parameters:
+        - {name: signature, in: query, required: false, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Skills retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillSetEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [profiles]
+      operationId: addMySkill
+      summary: One-click add of an existing skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [skill_id]
+              properties:
+                skill_id: {type: integer, minimum: 1, example: 201}
+      responses:
+        '200':
+          description: The new skill set (`Skill added`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillSetEnvelope'}
+        '400':
+          description: Missing or unknown `skill_id`, or the profile already has 50 skills.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: The profile was never saved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profile/me/skills/{id}:
+    delete:
+      tags: [profiles]
+      operationId: removeMySkill
+      summary: Remove a skill from the profile
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: The new skill set (`Skill removed`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillSetEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles/{slug}:
+    get:
+      tags: [profiles]
+      operationId: getPublicProfile
+      summary: Public profile
+      description: |
+        The profile document with privacy applied: `contact_private` blanks `email` and
+        `phone`; `current_salary_private` / `salary_private` / `hourly_private` zero that amount;
+        `last_working_date` is always `""`. The privacy flags themselves are still returned.
+
+        Each successful load counts as one profile view (not unique). `src=search` marks views
+        from search or discovery pages; anything else counts as direct. The owner's own views
+        and obvious bots aren't counted.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: src, in: query, required: false, schema: {type: string, enum: [search, direct]}}
+      responses:
+        '200':
+          description: '`Profile retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileEnvelope'}
+        '404':
+          description: 'Unknown slug, or the profile is private (`visible: false`).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /profiles/{slug}/analytics:
+    get:
+      tags: [profiles]
+      operationId: getProfileAnalytics
+      summary: Profile Activity & Analytics
+      description: |
+        Aggregates only, never who viewed. The period is the last 7 complete IST days,
+        rolled up daily at 00:20 IST, so today's views appear after the next rollup.
+        Résumé numbers stay 0 until résumés are served by the backend.
+      security: []
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Profile analytics retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileAnalyticsEnvelope'}
+        '404':
+          description: Unknown or private profile.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- jobs
+  /jobs/search:
+    post:
+      tags: [jobs]
+      operationId: searchJobs
+      summary: Search public job listings
+      description: |
+        One consolidated payload, sent when the user presses **Search** (filter changes do not
+        call the API on their own). All fields are optional; an empty body returns all public
+        jobs, newest first.
+
+        **Filter logic:** AND across different fields, OR within a list field.
+
+        **Always applied:** posted within the last 30 days, visible, active, not the unlisted
+        `Free` tier. With a valid `jp_session` cookie, jobs the user already applied to are excluded.
+
+        **Salary:** filters run on the INR baseline; the client converts with the `rates` asset
+        (`amount × rate`). Hidden-salary jobs still match salary filters but come back with
+        `salary_hidden: true` and null amounts.
+
+        **Match score** is computed on the client: job `skill_ids` in the user's skills ÷ job `skill_ids` × 100.
+      security:
+        - sessionCookie: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobSearchRequest'}
+            examples:
+              keyword:
+                summary: Keyword only
+                value: {query: senior engineer}
+              filtered:
+                summary: Several categories
+                value:
+                  query: designer
+                  skills: [201, 202]
+                  location_ids: ['1277333', '2643743']
+                  work_modes: [Remote, Hybrid]
+                  min_salary_inr: 3000000
+                  min_experience: 3
+                  notice_periods: [Immediate, 15 days]
+                  posted_within_days: 7
+                  sort: salary
+                  page: 1
+                  page_size: 20
+      responses:
+        '200':
+          description: 'One page of matching jobs (`Jobs retrieved successfully`). `Cache-Control: private, no-store`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobSearchEnvelope'}
+        '400':
+          description: |
+            Malformed JSON, an unknown enum value (rejected rather than ignored so a client bug
+            can't silently widen a search), min > max, a number out of range, too many values,
+            or text that's too long.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+              example: {status: false, message: 400 Bad Request, error: 'unknown work_modes value "Moon"', data: null}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /jobs/{id}:
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Job page
+      description: |
+        Public job page. With a session, `applied_at` and `can_manage` reflect the viewer;
+        the job's recruiter and its company's admins also get `share_hash` and `analytics`.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Job retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobDetailEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /jobs/share/{hash}:
+    get:
+      tags: [jobs]
+      operationId: getSharedJob
+      summary: Job page by share link
+      description: Opens a job (including unlisted free jobs) by its share hash. Same response as `GET /jobs/{id}`.
+      security:
+        - sessionCookie: []
+        - {}
+      parameters:
+        - {name: hash, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Job retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobDetailEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /jobs/{id}/outbound:
+    post:
+      tags: [jobs]
+      operationId: recordOutboundClick
+      summary: Record an external-apply click
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Click recorded`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiters/{id}:
+    get:
+      tags: [jobs]
+      operationId: getRecruiter
+      summary: Public recruiter card
+      description: 'The recruiter''s name and how many open jobs they have. List the jobs with `POST /jobs/search {"recruiter_id": id}`.'
+      security: []
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: '`Recruiter retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        type: object
+                        required: [recruiter, open_jobs]
+                        properties:
+                          recruiter: {$ref: '#/components/schemas/Person'}
+                          open_jobs: {type: integer}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- recruiting
+  /recruiter/companies:
+    get:
+      tags: [recruiting]
+      operationId: getPosterCompanies
+      summary: Companies the user may post under
+      responses:
+        '200':
+          description: '`Companies retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/PosterCompany'}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/jobs:
+    get:
+      tags: [recruiting]
+      operationId: getMyPostedJobs
+      summary: Jobs the user posted
+      parameters:
+        - {name: status, in: query, required: false, schema: {type: string, enum: [active, closed, expired]}}
+      responses:
+        '200':
+          description: '`Jobs retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/PostedJob'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [recruiting]
+      operationId: postJob
+      summary: Publish a job
+      description: |
+        Free jobs are unlisted (share link only), always Easy Apply, salary visible and never
+        linked to a company. Paid jobs need a payment method; `company_credits` needs an
+        approved company. A paid post with a fee returns 402 while payments aren't connected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobPostInput'}
+      responses:
+        '201':
+          description: '`Job published successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobDetailEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '402': {$ref: '#/components/responses/PaymentRequired'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/jobs/{id}:
+    put:
+      tags: [recruiting]
+      operationId: editJob
+      summary: Edit a job
+      description: Same body as posting. The tier, company and payment can't change.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobPostInput'}
+      responses:
+        '200':
+          description: '`Job updated successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/JobDetailEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/jobs/{id}/close:
+    post:
+      tags: [recruiting]
+      operationId: closeJob
+      summary: Close a job
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Job closed`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/jobs/{id}/repost:
+    post:
+      tags: [recruiting]
+      operationId: repostJob
+      summary: Repost a job for another 30 days
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Job reposted for another 30 days`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/drafts:
+    get:
+      tags: [recruiting]
+      operationId: getDrafts
+      summary: The user's post-a-job drafts
+      responses:
+        '200':
+          description: '`Drafts retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/Draft'}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [recruiting]
+      operationId: createDraft
+      summary: Save a new draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DraftInput'}
+      responses:
+        '200':
+          description: '`Draft saved`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DraftEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/drafts/{id}:
+    put:
+      tags: [recruiting]
+      operationId: updateDraft
+      summary: Overwrite a draft
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DraftInput'}
+      responses:
+        '200':
+          description: '`Draft saved`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DraftEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [recruiting]
+      operationId: deleteDraft
+      summary: Delete a draft
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: '`Draft deleted`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- applications
+  /applications:
+    get:
+      tags: [applications]
+      operationId: getMyApplications
+      summary: Application history
+      description: Most recent first. No pagination yet.
+      responses:
+        '200':
+          description: '`Applications retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/Application'}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [applications]
+      operationId: easyApply
+      summary: Easy Apply to a job
+      description: Uses today's free quota. The user must have saved a profile.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRef'}
+      responses:
+        '201':
+          description: '`Application submitted`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationEnvelope'}
+        '400':
+          description: Missing `job_id`, your own job, or the job takes applications on the employer's site.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '402':
+          description: Today's free applications are used up.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '404':
+          description: The job isn't open for applications.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '409':
+          description: Already applied, or no saved profile yet.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /applications/external:
+    post:
+      tags: [applications]
+      operationId: confirmExternalApplication
+      summary: Record "Yes, I applied" for an External job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JobRef'}
+      responses:
+        '201':
+          description: '`Application recorded`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationEnvelope'}
+        '400':
+          description: Missing `job_id`, your own job, or the job uses Easy Apply.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /applications/bulk:
+    post:
+      tags: [applications]
+      operationId: bulkApply
+      summary: Apply to several jobs at once
+      description: |
+        Up to 50 jobs, all or nothing. A dry run returns the plan (Easy Apply vs External,
+        the free/paid split, the fee and any blocking jobs) without applying. Drop the jobs
+        in `problems` and retry. A real run applies to every job or to none.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_ids]
+              properties:
+                job_ids: {type: array, minItems: 1, maxItems: 50, items: {type: string}}
+                dry_run: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Dry run (`Bulk application checked`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BulkResultEnvelope'}
+        '201':
+          description: Applied (`Applications submitted`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BulkResultEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '402': {$ref: '#/components/responses/PaymentRequired'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /applications/quota:
+    get:
+      tags: [applications]
+      operationId: getApplyQuota
+      summary: Today's free Easy Apply quota
+      responses:
+        '200':
+          description: '`Quota retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/Quota'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/jobs/{id}/applications:
+    get:
+      tags: [applications]
+      operationId: getApplicants
+      summary: Applicants for a job
+      description: For the job's recruiter or its company's admins.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: stage, in: query, required: false, schema: {$ref: '#/components/schemas/Stage'}}
+        - {name: min_match, in: query, required: false, schema: {type: integer, minimum: 0, maximum: 100}}
+        - {name: sort, in: query, required: false, schema: {type: string, enum: [recent, match], default: recent}}
+      responses:
+        '200':
+          description: '`Applicants retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/Applicant'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /recruiter/applications/{id}:
+    patch:
+      tags: [applications]
+      operationId: setApplicationStage
+      summary: Move an applicant to another stage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              properties:
+                stage: {$ref: '#/components/schemas/Stage'}
+      responses:
+        '200':
+          description: The updated applicant (`Stage updated`).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/Applicant'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- saved jobs
+  /saved-jobs:
+    get:
+      tags: [saved-jobs]
+      operationId: getSavedJobs
+      summary: Saved jobs, newest first
+      responses:
+        '200':
+          description: '`Saved jobs retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedJobsEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [saved-jobs]
+      operationId: clearAppliedSavedJobs
+      summary: Clear applied jobs from the saved list
+      parameters:
+        - {name: applied, in: query, required: true, schema: {type: string, enum: ['true']}}
+      responses:
+        '200':
+          description: The remaining saved jobs (`Applied jobs cleared`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedJobsEnvelope'}
+        '400':
+          description: '`applied` was not `true`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /saved-jobs/{job_id}:
+    put:
+      tags: [saved-jobs]
+      operationId: saveJob
+      summary: Save a job
+      description: At most 200 saved jobs.
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, maxLength: 150}}
+      responses:
+        '200':
+          description: The saved jobs (`Job saved`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedJobsEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [saved-jobs]
+      operationId: unsaveJob
+      summary: Unsave a job
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: The remaining saved jobs (`Job removed`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedJobsEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /saved-jobs/remove:
+    post:
+      tags: [saved-jobs]
+      operationId: unsaveJobs
+      summary: Unsave several jobs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_ids]
+              properties:
+                job_ids: {type: array, items: {type: string}}
+      responses:
+        '200':
+          description: The remaining saved jobs (`Jobs removed`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedJobsEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- companies
+  /companies/search:
+    post:
+      tags: [companies]
+      operationId: searchCompanies
+      summary: Search companies
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompanySearchRequest'}
+      responses:
+        '200':
+          description: '`Companies retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/CompanySearchResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/slug-availability:
+    get:
+      tags: [companies]
+      operationId: checkCompanySlug
+      summary: Is a company slug free?
+      parameters:
+        - {name: slug, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Slug checked`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        type: object
+                        required: [available]
+                        properties:
+                          available: {type: boolean}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies:
+    post:
+      tags: [companies]
+      operationId: createCompany
+      summary: Create a company
+      description: The creator becomes its first admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompanyInput'}
+      responses:
+        '201':
+          description: '`Company created successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}:
+    parameters:
+      - {name: slug, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [companies]
+      operationId: getCompany
+      summary: Company page
+      description: With a session, `viewer_role` is the viewer's role when they are a current member.
+      security:
+        - sessionCookie: []
+        - {}
+      responses:
+        '200':
+          description: '`Company retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyEnvelope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      tags: [companies]
+      operationId: updateCompany
+      summary: Update the whole company page
+      description: Company admins only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompanyInput'}
+      responses:
+        '200':
+          description: '`Company updated successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [companies]
+      operationId: deleteCompany
+      summary: Delete the company
+      description: Company admins only.
+      responses:
+        '200':
+          description: '`Company deleted successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/logo:
+    put:
+      tags: [companies]
+      operationId: setCompanyLogo
+      summary: Upload the company logo
+      description: Raw image body, at most 2 MB. Company admins only.
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, format: binary}}
+          image/png: {schema: {type: string, format: binary}}
+          image/webp: {schema: {type: string, format: binary}}
+      responses:
+        '200':
+          description: '`Image updated successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/banner:
+    put:
+      tags: [companies]
+      operationId: setCompanyBanner
+      summary: Upload the company banner
+      description: Raw image body, at most 5 MB. Company admins only.
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, format: binary}}
+          image/png: {schema: {type: string, format: binary}}
+          image/webp: {schema: {type: string, format: binary}}
+      responses:
+        '200':
+          description: '`Image updated successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/TooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/dashboard:
+    get:
+      tags: [companies]
+      operationId: getCompanyDashboard
+      summary: Company admin dashboard counts
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`Dashboard retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/CompanyDashboard'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/members:
+    get:
+      tags: [companies]
+      operationId: getCompanyMembers
+      summary: Company members and membership requests
+      description: '`status=pending` is the employment-verification queue.'
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: status, in: query, required: false, schema: {$ref: '#/components/schemas/MemberStatus'}}
+      responses:
+        '200':
+          description: '`Members retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {type: array, items: {$ref: '#/components/schemas/Member'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/members/{user_id}/approve:
+    post:
+      tags: [companies]
+      operationId: approveMember
+      summary: Approve (verify) a membership request
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: user_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: '`Request updated successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/members/{user_id}/reject:
+    post:
+      tags: [companies]
+      operationId: rejectMember
+      summary: Reject a membership request
+      description: There is no rejection reason.
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: user_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: '`Request updated successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/members/{user_id}:
+    patch:
+      tags: [companies]
+      operationId: setMemberRole
+      summary: Change a member's role
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: user_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: {$ref: '#/components/schemas/MemberRole'}
+      responses:
+        '200':
+          description: '`Role updated successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The change would leave the company without an admin.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/members/{user_id}/offboard:
+    post:
+      tags: [companies]
+      operationId: offboardMember
+      summary: Move a member to past employees
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+        - {name: user_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: '`Member moved to past employees`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The member is the last admin.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /companies/{slug}/leave:
+    post:
+      tags: [companies]
+      operationId: leaveCompany
+      summary: Leave the company
+      parameters:
+        - {name: slug, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: '`You have left the company`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: The last admin can't leave.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /files/img/{name}:
+    get:
+      tags: [companies]
+      operationId: getImage
+      summary: An uploaded image (profile photo, logo, banner)
+      description: |
+        Raw image bytes, not the envelope. Names are random and never reused:
+        `Cache-Control: public, max-age=31536000, immutable`.
+      security: []
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: The image.
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            image/png: {schema: {type: string, format: binary}}
+            image/webp: {schema: {type: string, format: binary}}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- reference
+  /assets/manifest:
+    get:
+      tags: [reference]
+      operationId: getAssetManifest
+      summary: Current reference file per kind
+      description: '`Cache-Control: public, max-age=60`. Fetch a file only when its `sha256` changes.'
+      security: []
+      responses:
+        '200':
+          description: '`Manifest retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        type: object
+                        description: Keyed by kind.
+                        properties:
+                          skills: {$ref: '#/components/schemas/ManifestEntry'}
+                          designations: {$ref: '#/components/schemas/ManifestEntry'}
+                          locations: {$ref: '#/components/schemas/ManifestEntry'}
+                          rates: {$ref: '#/components/schemas/ManifestEntry'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /assets/{file}:
+    get:
+      tags: [reference]
+      operationId: getAsset
+      summary: One reference file
+      description: |
+        The raw JSON file, not the envelope. Names carry a timestamp and content hash, so the
+        bytes never change: `Cache-Control: public, max-age=31536000, immutable`, `ETag` = sha256.
+        Autocomplete for skills, designations and locations runs on the client from these files.
+      security: []
+      parameters:
+        - {name: file, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: The file.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    description: '`skills` and `designations` files.'
+                    items: {$ref: '#/components/schemas/AssetTerm'}
+                  - type: array
+                    description: '`locations` file: the whole tree.'
+                    items: {$ref: '#/components/schemas/Location'}
+                  - $ref: '#/components/schemas/Rates'
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- settings
+  /settings:
+    get:
+      tags: [settings]
+      operationId: getPublicSettings
+      summary: Public limits and prices
+      security: []
+      responses:
+        '200':
+          description: '`Settings retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/PublicSettings'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  # ---------------------------------------------------------------- admin
+  /admin/settings:
+    get:
+      tags: [admin]
+      operationId: getSettings
+      summary: All platform settings
+      responses:
+        '200':
+          description: '`Settings retrieved successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingsEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    put:
+      tags: [admin]
+      operationId: updateSettings
+      summary: Replace the platform settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Settings'}
+      responses:
+        '200':
+          description: '`Settings updated successfully`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingsEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /admin/taxonomy/{kind}:
+    get:
+      tags: [admin]
+      operationId: listTerms
+      summary: Taxonomy review queue
+      description: Terms with how many jobs use them.
+      parameters:
+        - {name: kind, in: path, required: true, schema: {$ref: '#/components/schemas/TermKind'}}
+        - {name: status, in: query, required: false, schema: {$ref: '#/components/schemas/TermStatus'}}
+        - {name: page, in: query, required: false, schema: {type: integer, minimum: 1}}
+        - {name: page_size, in: query, required: false, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: '`Terms retrieved successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/TermPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /admin/taxonomy/{kind}/merge:
+    post:
+      tags: [admin]
+      operationId: mergeTerms
+      summary: Merge terms into a master term
+      description: Sources become aliases of the master; profiles and jobs are repointed.
+      parameters:
+        - {name: kind, in: path, required: true, schema: {$ref: '#/components/schemas/TermKind'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_ids, master_id]
+              properties:
+                source_ids: {type: array, minItems: 1, items: {type: integer}}
+                master_id: {type: integer}
+      responses:
+        '200':
+          description: '`Terms merged successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /admin/taxonomy/{kind}/{id}:
+    parameters:
+      - {name: kind, in: path, required: true, schema: {$ref: '#/components/schemas/TermKind'}}
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    patch:
+      tags: [admin]
+      operationId: updateTerm
+      summary: Rename or approve a term
+      description: 'Approve = `{"status": "verified"}`.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, maxLength: 80}
+                status: {type: string, enum: [verified, pending]}
+      responses:
+        '200':
+          description: '`Term updated successfully`.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data: {$ref: '#/components/schemas/Term'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409':
+          description: Another term already has that name.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [admin]
+      operationId: deleteTerm
+      summary: Reject (delete) a term and its aliases
+      responses:
+        '200':
+          description: '`Term deleted successfully`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /admin/fx/refresh:
+    post:
+      tags: [admin]
+      operationId: refreshRates
+      summary: Refresh exchange rates now
+      description: Starts a refresh in the background; the manifest's `rates` entry updates when it finishes.
+      responses:
+        '202':
+          description: '`Exchange-rate refresh started; the manifest''s rates entry updates when it finishes`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409':
+          description: A refresh is already running.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+  # ---------------------------------------------------------------- health
+  /healthz:
+    servers:
+      - url: http://localhost:8081
+    get:
+      tags: [health]
+      operationId: liveness
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: '`ok`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+
+  /readyz:
+    servers:
+      - url: http://localhost:8081
+    get:
+      tags: [health]
+      operationId: readiness
+      summary: Readiness probe (database reachable)
+      security: []
+      responses:
+        '200':
+          description: '`ready`. `data` is null.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmptyEnvelope'}
+        '503':
+          description: Database unavailable (`message` is `not ready`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: jp_session
+      description: |
+        Opaque session id set by `POST /auth/session`. HttpOnly, SameSite=Lax, Path=/,
+        Secure outside dev. A platform-admin endpoint also needs the user's IAM id in
+        `PLATFORM_ADMIN_IDS` (403 otherwise).
+
+  headers:
+    SetSessionCookie:
+      description: '`jp_session=<uuid>; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax` (plus `Secure` outside dev)'
+      schema: {type: string}
+    ClearSessionCookie:
+      description: '`jp_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`'
+      schema: {type: string}
+
+  responses:
+    BadRequest:
+      description: Invalid request (bad JSON or a failed validation rule).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Unauthorized:
+      description: No session, or the session expired / was revoked / the account was suspended. The cookie is cleared.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+          example: {status: false, message: 401 Unauthorized, error: not authenticated, data: null}
+    PaymentRequired:
+      description: The action needs a payment and payments aren't connected yet.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Forbidden:
+      description: Signed in but not allowed (e.g. not a company admin, not a platform admin).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotFound:
+      description: Missing, private, or not yours.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Conflict:
+      description: Conflicts with existing state (taken slug, duplicate, already applied, last admin).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    TooLarge:
+      description: Upload too large.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    UnsupportedMediaType:
+      description: Content-Type is not `application/json` (or an accepted image type for uploads).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    InternalError:
+      description: Unexpected failure. No internal details are returned.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+          example: {status: false, message: 500 Internal Server Error, error: internal error, data: null}
+
+  schemas:
+    # ---- envelopes ----
+    ErrorEnvelope:
+      type: object
+      required: [status, message, error, data]
+      properties:
+        status: {type: boolean, const: false}
+        message: {type: string, description: 'HTTP status line, e.g. "401 Unauthorized"'}
+        error: {type: string, description: 'Short human-readable reason.'}
+        data: {type: 'null'}
+    SuccessEnvelope:
+      type: object
+      required: [status, message, error, data]
+      properties:
+        status: {type: boolean, const: true}
+        message: {type: string}
+        error: {type: 'null'}
+        data: {}
+    EmptyEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {type: 'null'}
+    SessionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/SessionResponse'}
+    AccessTokenEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/AccessTokenResponse'}
+    LogoutEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data:
+              type: object
+              properties:
+                message: {type: string, example: Logged out successfully}
+    ProfileEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/Profile'}
+    SkillSetEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/SkillSet'}
+    ProfileAnalyticsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/ProfileAnalytics'}
+    JobSearchEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/JobSearchResult'}
+    JobDetailEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/JobDetail'}
+    DraftEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/Draft'}
+    ApplicationEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/Application'}
+    BulkResultEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/BulkResult'}
+    SavedJobsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {type: array, items: {$ref: '#/components/schemas/SavedJob'}}
+    CompanyEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/Company'}
+    SettingsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - properties:
+            data: {$ref: '#/components/schemas/Settings'}
+
+    # ---- auth ----
+    SessionRequest:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string, description: 'One-time code from IAM''s redirect (`?code=`).', example: Zk9s7Qm2Vtq1}
+    User:
+      type: object
+      required: [id, iam_user_id, name, email, status]
+      properties:
+        id: {type: string, format: uuid, description: jobPortal user id.}
+        iam_user_id: {type: string, description: Permanent IAM ecosystem id. Never show in the UI.}
+        name: {type: string}
+        email: {type: string, format: email}
+        status: {type: string, example: active}
+    CompanyMembership:
+      type: object
+      required: [slug, name, role]
+      properties:
+        slug: {type: string}
+        name: {type: string}
+        role: {$ref: '#/components/schemas/MemberRole'}
+    SessionResponse:
+      type: object
+      required: [user, authorization, expires_at]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        authorization:
+          type: object
+          description: jobPortal-owned authorization (IAM only does authentication).
+          required: [roles, companies, is_platform_admin]
+          properties:
+            roles: {type: array, items: {type: string}, example: [candidate]}
+            companies:
+              type: array
+              description: Companies the user currently belongs to (approved memberships).
+              items: {$ref: '#/components/schemas/CompanyMembership'}
+            is_platform_admin: {type: boolean, description: 'Set on `GET /auth/me`.'}
+        expires_at: {type: string, format: date-time, description: Absolute session end; the user must sign in again after it.}
+    AccessTokenResponse:
+      type: object
+      required: [access_token, expires_at]
+      properties:
+        access_token: {type: string, description: IAM JWT. Server-side use only.}
+        expires_at: {type: string, format: date-time}
+
+    # ---- shared enums ----
+    WorkMode: {type: string, enum: [Remote, Hybrid, On-site]}
+    WorkType: {type: string, enum: [Full-time, Part-time, Contract, Internship, Freelance, Consultant, Gig, Advisory, Board member, Volunteering, Others]}
+    NoticePeriod: {type: string, enum: [Immediate, 15 days, 30 days, 45 days, 60 days, 90 days, More than 90 days]}
+    Relocation: {type: string, enum: [On their own, Supported locally, Supported internationally, Not supported]}
+    Tier:
+      type: string
+      enum: [Free, Premium]
+      description: '`Free` listings are unlisted and never returned by search.'
+    ApplicationMethod: {type: string, enum: [Easy apply, External]}
+    Stage: {type: string, enum: [new, shortlisted, contacted, rejected]}
+    MemberRole: {type: string, enum: [admin, hr, employee]}
+    MemberStatus: {type: string, enum: [pending, current, past, rejected], default: current}
+    TermKind: {type: string, enum: [skill, designation]}
+    TermStatus: {type: string, enum: [pending, verified, merged]}
+
+    # ---- profiles ----
+    Profile:
+      type: object
+      description: |
+        The whole profile document. Lists are always `[]`, never null.
+        Plain text only everywhere: HTML-like tags (`<a`, `</`, `<!`) and control characters are rejected.
+      properties:
+        saved: {type: boolean, readOnly: true, description: 'False for a starter profile not yet stored.'}
+        photo: {type: [string, 'null'], readOnly: true, description: 'Set with PUT /profile/me/photo.', example: /api/v1/files/img/7c1e.jpg}
+        about_updated: {type: [string, 'null'], format: date-time, readOnly: true}
+        slug: {type: string, minLength: 3, maxLength: 50, pattern: '^[a-z0-9]+(-[a-z0-9]+)*$', description: 'Not reserved (admin, api, jobs, login, profile, search, ...).', example: alex-thompson}
+        name: {type: string, minLength: 2, maxLength: 100}
+        title: {type: string, minLength: 1, maxLength: 120}
+        location: {type: string, maxLength: 100, description: Free text.}
+        website: {type: string, maxLength: 100, description: 'Portfolio display name, e.g. "alex.design".'}
+        about: {type: string, maxLength: 2000}
+        gender: {type: string, enum: [Male, Female, Non-binary, Prefer not to say, '']}
+        pronouns: {type: string, maxLength: 100, description: Free text.}
+        email: {type: string, description: 'A valid address or "". Blank on public reads when contact_private.'}
+        phone: {type: string, maxLength: 30, description: 'Digits, spaces and + ( ) - . Blank on public reads when contact_private.'}
+        experience_years: {type: integer, minimum: 0, maximum: 99}
+        notice: {type: string, enum: [Immediate, 15 days, 30 days, 45 days, 60 days, 90 days, More than 90 days, '']}
+        is_serving_notice: {type: boolean}
+        last_working_date: {type: string, description: 'YYYY-MM-DD, required while is_serving_notice; "" otherwise and always "" on public reads.'}
+        salary_currency: {type: string, minLength: 3, maxLength: 3, description: 'One currency for current, expected and hourly.'}
+        current_salary: {type: number, minimum: 0, maximum: 1000000000000, description: 'Yearly. 0 = not set (or private on public reads).'}
+        expected_salary: {type: number, minimum: 0, maximum: 1000000000000, description: Yearly. 0 = not set.}
+        hourly_rate: {type: number, minimum: 0, maximum: 1000000, description: 0 = not set.}
+        work_types: {type: array, items: {$ref: '#/components/schemas/WorkType'}}
+        preferred_locations: {type: array, maxItems: 50, items: {type: string}, description: GeoNames ids.}
+        target_roles: {type: array, maxItems: 20, items: {type: string}, description: Designation names; unknown names become pending designations.}
+        open_to_remote: {type: boolean}
+        work_mode: {type: string, enum: [Remote or hybrid, Remote, Hybrid, On-site, Open to all arrangements, '']}
+        relocation: {type: string, enum: [On their own, Supported locally, Supported internationally, Not supported, '']}
+        visible: {type: boolean, description: 'False makes the profile private: public reads return 404.'}
+        open: {type: boolean, description: Open to opportunities.}
+        current_salary_private: {type: boolean}
+        salary_private: {type: boolean}
+        hourly_private: {type: boolean}
+        contact_private: {type: boolean}
+        resume_private: {type: boolean}
+        skill_groups:
+          type: array
+          maxItems: 20
+          description: 'At most 50 skills in total. Skills are names; unknown ones become pending skills. A skill repeated across groups is kept in its first group only; empty groups are dropped. Array order is display order.'
+          items: {$ref: '#/components/schemas/SkillGroup'}
+        skills: {type: array, readOnly: true, items: {type: string}, description: 'Every skill, in display order.'}
+        experiences: {type: array, maxItems: 50, items: {$ref: '#/components/schemas/Experience'}}
+        social_links: {type: array, maxItems: 10, items: {$ref: '#/components/schemas/SocialLink'}}
+        languages: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/Language'}}
+        education: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/Education'}}
+        authorizations: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/WorkAuthorization'}}
+        projects: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/Project'}}
+    SkillGroup:
+      type: object
+      required: [name, skills]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 60}
+        skills: {type: array, items: {type: string}}
+    Experience:
+      type: object
+      required: [company, title, type, start]
+      properties:
+        company: {type: string, minLength: 1, maxLength: 150}
+        title: {type: string, minLength: 1, maxLength: 150}
+        type: {$ref: '#/components/schemas/WorkType'}
+        start: {type: string, description: YYYY-MM}
+        end: {type: string, description: 'YYYY-MM, >= start; required unless current, "" while current.'}
+        current: {type: boolean}
+        promoted: {type: boolean}
+        description: {type: string, maxLength: 5000}
+        verification: {type: string, enum: [Unverified, Pending, Verified, Rejected], readOnly: true, description: 'From the company membership: none → Unverified, pending → Pending, current or past → Verified, rejected → Rejected.'}
+        company_slug: {type: string, readOnly: true, description: 'The linked registered company, or "".'}
+    SocialLink:
+      type: object
+      required: [platform, url]
+      properties:
+        platform: {type: string, minLength: 1, maxLength: 30}
+        url: {type: string, format: uri, description: http(s) URL.}
+    Language:
+      type: object
+      properties:
+        name: {type: string}
+        proficiency: {type: string}
+    Education:
+      type: object
+      description: Needs an institution or a degree.
+      properties:
+        institution: {type: string}
+        degree: {type: string}
+        field: {type: string}
+        start: {type: string}
+        end: {type: string}
+    WorkAuthorization:
+      type: object
+      properties:
+        country: {type: string}
+        type: {type: string, example: H-1B Holder}
+        from: {type: string, description: YYYY-MM-DD}
+        until: {type: string, description: 'YYYY-MM-DD, >= from. Cleared when indefinite.'}
+        indefinite: {type: boolean}
+    Project:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 100}
+        description: {type: string}
+        url: {type: string, description: Optional http(s) URL.}
+        tags: {type: array, maxItems: 6, items: {type: string}}
+    SkillSet:
+      type: object
+      required: [signature, changed]
+      properties:
+        signature: {type: string}
+        changed: {type: boolean}
+        skills:
+          type: array
+          description: Present only when changed.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {type: integer}
+              name: {type: string}
+    ProfileMetrics:
+      type: object
+      required: [profile_views, resume_views, resume_downloads]
+      properties:
+        profile_views: {type: integer}
+        resume_views: {type: integer}
+        resume_downloads: {type: integer}
+    ProfileAnalytics:
+      type: object
+      required: [from, to, totals, growth, view_sources, daily, peak_day]
+      properties:
+        from: {type: string, format: date, description: First day of the period (IST).}
+        to: {type: string, format: date, description: Last day of the period (IST).}
+        totals: {$ref: '#/components/schemas/ProfileMetrics'}
+        growth:
+          type: object
+          description: '% change against the 7 days before, to one decimal. Null when the previous period had nothing.'
+          properties:
+            profile_views: {type: [number, 'null']}
+            resume_views: {type: [number, 'null']}
+            resume_downloads: {type: [number, 'null']}
+        view_sources:
+          type: object
+          required: [search, direct]
+          properties:
+            search: {type: integer, description: Recruiter Searches.}
+            direct: {type: integer, description: Direct Impressions.}
+        daily:
+          type: array
+          description: Always 7 entries, oldest first.
+          items:
+            allOf:
+              - type: object
+                required: [date]
+                properties:
+                  date: {type: string, format: date}
+              - $ref: '#/components/schemas/ProfileMetrics'
+        peak_day: {type: [string, 'null'], format: date, description: 'Day with the most activity (ties: earliest). Null with no activity.'}
+
+    # ---- jobs ----
+    JobSearchRequest:
+      type: object
+      properties:
+        query: {type: string, maxLength: 200, description: 'Every word must appear in the job title (case-insensitive). Company, category and skills are not searched.'}
+        location_text: {type: string, maxLength: 100, description: Matched against the job's location label.}
+        designations: {type: array, maxItems: 200, items: {type: integer}, description: Designation term ids (OR).}
+        skills: {type: array, maxItems: 200, items: {type: integer}, description: Skill term ids (OR).}
+        company: {type: string, description: 'A company slug: that company''s jobs tab.'}
+        recruiter_id: {type: string, description: 'A recruiter''s user id: the jobs on their public card.'}
+        location_ids: {type: array, maxItems: 200, items: {type: string}, description: GeoNames city ids flattened from the tree (OR).}
+        worldwide_remote: {type: boolean, default: false, description: Include worldwide-remote jobs.}
+        min_salary_inr: {type: number, minimum: 0, default: 0, description: 0 = no minimum.}
+        max_salary_inr: {type: number, minimum: 0, default: 0, description: '0 = no maximum. Must be >= min_salary_inr.'}
+        notice_periods: {type: array, items: {$ref: '#/components/schemas/NoticePeriod'}}
+        relocation: {type: array, items: {$ref: '#/components/schemas/Relocation'}}
+        work_modes: {type: array, items: {$ref: '#/components/schemas/WorkMode'}}
+        work_types: {type: array, items: {$ref: '#/components/schemas/WorkType'}}
+        categories: {type: array, maxItems: 200, items: {type: string}}
+        levels: {type: array, maxItems: 200, items: {type: string}}
+        tiers: {type: array, items: {$ref: '#/components/schemas/Tier'}}
+        application_methods: {type: array, items: {$ref: '#/components/schemas/ApplicationMethod'}, description: 'Send ["Easy apply"] for the Easy-apply-only toggle.'}
+        industries: {type: array, maxItems: 200, items: {type: string}}
+        company_sizes: {type: array, maxItems: 200, items: {type: string}}
+        benefits: {type: array, maxItems: 200, items: {type: string}}
+        job_ids: {type: array, maxItems: 200, items: {type: string}, description: 'Restrict to these ids (the "saved jobs only" view).'}
+        min_experience: {type: [integer, 'null'], minimum: 0, maximum: 99}
+        max_experience: {type: [integer, 'null'], minimum: 0, maximum: 99}
+        interview_rounds: {type: [integer, 'null'], minimum: 0, maximum: 99, description: 'At most this many rounds (exactly, with interview_rounds_exact).'}
+        interview_rounds_exact: {type: boolean, default: false}
+        posted_within_days: {type: integer, enum: [1, 3, 7, 9, 15, 30], default: 30}
+        sort: {type: string, enum: [newest, salary, title], default: newest, description: 'salary = highest INR baseline first, hidden salaries last.'}
+        page: {type: integer, minimum: 1, maximum: 1000, default: 1}
+        page_size: {type: integer, minimum: 1, default: 20, description: Values above 50 are capped to 50.}
+    Job:
+      type: object
+      required: [id, title, company, company_slug, company_name, work_modes, work_types, location_type, location, location_ids, salary_hidden, skill_ids, skills, tier, application, posted_at]
+      properties:
+        id: {type: string, example: frontend-engineer}
+        title: {type: string}
+        company: {type: [string, 'null'], description: Company id. Null for free and unlinked jobs.}
+        company_slug: {type: [string, 'null'], description: Null for free and unlinked jobs.}
+        company_name: {type: string, description: Falls back to the text the recruiter typed.}
+        company_sector: {type: string}
+        company_size: {type: string}
+        designation_id: {type: [integer, 'null']}
+        category: {type: string}
+        level: {type: string}
+        summary: {type: string}
+        work_modes: {type: array, items: {$ref: '#/components/schemas/WorkMode'}}
+        work_types: {type: array, items: {$ref: '#/components/schemas/WorkType'}}
+        location_type: {type: string, enum: [specific, world_remote]}
+        location: {type: string, description: Display label.}
+        location_ids: {type: array, items: {type: string}, description: 'Show the first + "(+N)" overflow.'}
+        salary_min: {type: [number, 'null'], description: Original currency. Null when salary_hidden.}
+        salary_max: {type: [number, 'null'], description: Original currency. Null when salary_hidden.}
+        currency: {type: [string, 'null'], description: ISO 4217. Null when salary_hidden.}
+        normalized_inr_amount: {type: [number, 'null'], description: Upper bound in INR. Null when salary_hidden.}
+        salary_hidden: {type: boolean, description: 'Show "Competitive".'}
+        skill_ids: {type: array, items: {type: integer}}
+        skills: {type: array, items: {type: string}, description: 'Names, same order as skill_ids.'}
+        notice_periods: {type: array, items: {$ref: '#/components/schemas/NoticePeriod'}}
+        benefits: {type: array, items: {type: string}}
+        relocation: {type: string}
+        experience_years: {type: integer, description: Minimum years required.}
+        interview_rounds: {type: integer}
+        tier: {$ref: '#/components/schemas/Tier'}
+        application: {$ref: '#/components/schemas/ApplicationMethod'}
+        views: {type: integer}
+        recruiter_actions: {type: integer}
+        posted_at: {type: string, format: date-time}
+    JobSearchResult:
+      type: object
+      required: [jobs, total, page, page_size]
+      properties:
+        jobs: {type: array, items: {$ref: '#/components/schemas/Job'}}
+        total: {type: integer, description: Matches across all pages (0 when the page is past the end).}
+        page: {type: integer}
+        page_size: {type: integer}
+    Person:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+    CompanyCard:
+      type: object
+      required: [slug, name]
+      properties:
+        slug: {type: string}
+        name: {type: string}
+        tagline: {type: string}
+        size: {type: string}
+        logo_url: {type: [string, 'null']}
+        website: {type: string}
+    JobAnalytics:
+      type: object
+      properties:
+        views: {type: integer}
+        applications: {type: integer}
+        high_fit: {type: [integer, 'null'], description: 'Easy Apply only: applicants with match >= 70%.'}
+        recruiter_actions: {type: [integer, 'null'], description: Easy Apply only.}
+        outbound_clicks: {type: integer}
+        expires_in_days: {type: integer}
+    JobDetail:
+      description: |
+        A job page. Note `company` here is the company card (or null), replacing the
+        company id that search results carry in the same field.
+      allOf:
+        - $ref: '#/components/schemas/Job'
+        - type: object
+          properties:
+            status: {type: string, enum: [active, closed, expired]}
+            description: {type: string}
+            interview_stages: {type: array, items: {type: string}}
+            external_url: {type: string, description: External jobs only.}
+            recruiter: {oneOf: [{$ref: '#/components/schemas/Person'}, {type: 'null'}]}
+            company: {oneOf: [{$ref: '#/components/schemas/CompanyCard'}, {type: 'null'}]}
+            applied_at: {type: [string, 'null'], format: date-time, description: When the signed-in viewer applied.}
+            can_manage: {type: boolean, description: The viewer is the recruiter or an admin of the job's company.}
+            share_hash: {type: string, description: Managers only.}
+            analytics: {$ref: '#/components/schemas/JobAnalytics'}
+
+    # ---- recruiting ----
+    JobPostInput:
+      type: object
+      required: [tier, designation, skills, location_ids, salary_max, currency, work_modes, work_types, relocation, application, description]
+      properties:
+        tier: {type: string, enum: [free, paid]}
+        company_slug: {type: string, description: 'Paid: an approved company of the poster.'}
+        company_name: {type: string, description: Shown when there is no linked company.}
+        payment_method: {type: string, enum: [company_credits, out_of_pocket], description: 'Paid only. company_credits needs an approved company.'}
+        designation: {type: string, description: Job title; becomes a designation term.}
+        skills: {type: array, minItems: 1, maxItems: 15, items: {type: string}, description: Skill names; become skill terms.}
+        min_experience: {type: integer, minimum: 0, maximum: 99}
+        location_ids: {type: array, minItems: 1, maxItems: 200, items: {type: string}}
+        worldwide_remote: {type: boolean}
+        salary_max: {type: number, exclusiveMinimum: 0, description: Maximum annual salary.}
+        currency: {type: string}
+        hide_salary: {type: boolean}
+        work_modes: {type: array, minItems: 1, items: {$ref: '#/components/schemas/WorkMode'}}
+        work_types: {type: array, minItems: 1, items: {$ref: '#/components/schemas/WorkType'}}
+        notice_periods: {type: array, items: {$ref: '#/components/schemas/NoticePeriod'}}
+        relocation: {$ref: '#/components/schemas/Relocation'}
+        interview_stages: {type: array, maxItems: 20, items: {type: string}}
+        application: {$ref: '#/components/schemas/ApplicationMethod'}
+        external_url: {type: string, description: 'External applications: a valid https:// link.'}
+        description: {type: string, maxLength: 10000}
+    PostedJob:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+        tier: {type: string}
+        company_name: {type: string}
+        company_slug: {type: [string, 'null']}
+        status: {type: string, enum: [active, closed, expired]}
+        share_hash: {type: string}
+        views: {type: integer}
+        applications: {type: integer}
+        posted_at: {type: string, format: date-time}
+    PosterCompany:
+      type: object
+      properties:
+        slug: {type: string}
+        name: {type: string}
+        role: {$ref: '#/components/schemas/MemberRole'}
+        hq_location_id: {type: [string, 'null']}
+        branch_location_ids: {type: array, items: {type: string}}
+    DraftInput:
+      type: object
+      required: [form]
+      properties:
+        form: {type: object, additionalProperties: true, description: The post-a-job form as the client holds it.}
+    Draft:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        form: {type: object, additionalProperties: true}
+        updated_at: {type: string, format: date-time}
+
+    # ---- applications ----
+    JobRef:
+      type: object
+      required: [job_id]
+      properties:
+        job_id: {type: string, maxLength: 150}
+    Application:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        job_id: {type: string}
+        job_title: {type: string}
+        company_name: {type: string}
+        job_status: {type: string, enum: [active, closed, expired]}
+        apply_type: {type: string}
+        stage: {$ref: '#/components/schemas/Stage'}
+        status: {type: string, enum: [open, cancelled]}
+        match_pct: {type: [integer, 'null']}
+        submitted_at: {type: string, format: date-time}
+    BulkResult:
+      type: object
+      properties:
+        easy_apply: {type: array, items: {type: string}, description: 'Job ids, in request order.'}
+        external: {type: array, items: {type: string}, description: Logged as applied; the client opens their sites.}
+        free: {type: integer, description: Easy Apply jobs covered by today's free applications.}
+        paid: {type: integer, description: Easy Apply jobs past the free allowance.}
+        fee_paise: {type: integer, description: paid × the apply fee.}
+        problems:
+          type: array
+          description: Jobs that block the batch; drop them and retry.
+          items:
+            type: object
+            properties:
+              job_id: {type: string}
+              reason: {type: string}
+        dry_run: {type: boolean}
+        applications: {type: array, items: {$ref: '#/components/schemas/Application'}, description: Real run only.}
+    Quota:
+      type: object
+      required: [limit, used, remaining]
+      properties:
+        limit: {type: integer}
+        used: {type: integer}
+        remaining: {type: integer}
+    Applicant:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        stage: {$ref: '#/components/schemas/Stage'}
+        match_pct: {type: integer}
+        matched_skills: {type: array, items: {type: string}}
+        unmatched_skills: {type: array, items: {type: string}}
+        submitted_at: {type: string, format: date-time}
+        stage_updated_at: {type: [string, 'null'], format: date-time}
+        dossier:
+          type: object
+          properties:
+            name: {type: string}
+            profile_slug: {type: string}
+            email: {type: string}
+            phone: {type: string}
+            location: {type: string}
+            experience_years: {type: integer}
+            notice: {type: string}
+            salary_currency: {type: string}
+            expected_salary: {type: number}
+            current_salary: {type: [number, 'null'], description: Null when the candidate keeps it private.}
+            skills: {type: array, items: {type: string}}
+    SavedJob:
+      type: object
+      required: [job_id, saved_at, applied]
+      properties:
+        job_id: {type: string}
+        saved_at: {type: string, format: date-time}
+        applied: {type: boolean}
+
+    # ---- companies ----
+    CompanySize:
+      type: string
+      enum: [1–10 people, 11–50 people, 51–200 people, 201–500 people, '501–1,000 people', '1,001–5,000 people', 5,000+ people]
+    CompanyInput:
+      type: object
+      required: [name, slug, size, industries, hq_location_id]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 120}
+        slug: {type: string, minLength: 3, maxLength: 60, pattern: '^[a-z0-9]([a-z0-9-]{1,58})[a-z0-9]$', description: 'Lowercase letters, numbers and single hyphens; not reserved.'}
+        tagline: {type: string, maxLength: 150}
+        size: {$ref: '#/components/schemas/CompanySize'}
+        industries: {type: array, minItems: 1, maxItems: 5, items: {type: string, minLength: 1, maxLength: 25}}
+        about: {type: string, maxLength: 5000}
+        website: {type: string}
+        social:
+          type: object
+          description: 'Keys: linkedin, x, github, glassdoor.'
+          propertyNames: {enum: [linkedin, x, github, glassdoor]}
+          additionalProperties: {type: string}
+        founded_year: {type: [integer, 'null'], minimum: 1800}
+        hq_location_id: {type: string}
+        hq_address: {type: string, maxLength: 250}
+        branch_location_ids: {type: array, maxItems: 200, items: {type: string}}
+        products: {type: array, maxItems: 20, items: {$ref: '#/components/schemas/Product'}}
+        benefits: {type: array, maxItems: 30, items: {$ref: '#/components/schemas/Benefit'}}
+    Product:
+      type: object
+      properties:
+        name: {type: string, minLength: 2, maxLength: 80}
+        about: {type: string, minLength: 1, maxLength: 500}
+        url: {type: string}
+    Benefit:
+      type: object
+      properties:
+        title: {type: string, minLength: 2, maxLength: 60}
+        details: {type: string, maxLength: 300}
+        icon: {type: string, enum: [heart, laptop, coffee, spark, money]}
+    Company:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        tagline: {type: string}
+        size: {$ref: '#/components/schemas/CompanySize'}
+        industries: {type: array, items: {type: string}}
+        about: {type: string}
+        website: {type: string}
+        social: {type: object, additionalProperties: {type: string}}
+        founded_year: {type: [integer, 'null']}
+        hq_location_id: {type: [string, 'null']}
+        hq_country_code: {type: [string, 'null']}
+        hq_address: {type: string}
+        branch_location_ids: {type: array, items: {type: string}}
+        logo_url: {type: [string, 'null']}
+        banner_url: {type: [string, 'null']}
+        products: {type: array, items: {$ref: '#/components/schemas/Product'}}
+        benefits: {type: array, items: {$ref: '#/components/schemas/Benefit'}}
+        created_at: {type: string, format: date-time}
+        viewer_role: {oneOf: [{$ref: '#/components/schemas/MemberRole'}, {type: 'null'}], description: The viewer's role when they are a current member.}
+    CompanySearchRequest:
+      type: object
+      properties:
+        query: {type: string, maxLength: 100}
+        countries: {type: array, maxItems: 50, items: {type: string, pattern: '^[A-Z]{2}$'}, description: ISO country codes.}
+        industries: {type: array, maxItems: 20, items: {type: string, minLength: 1, maxLength: 25}}
+        sizes: {type: array, items: {$ref: '#/components/schemas/CompanySize'}}
+        page: {type: integer, minimum: 1, maximum: 1000, default: 1}
+        page_size: {type: integer, minimum: 1, maximum: 50, default: 20}
+    CompanySearchResult:
+      type: object
+      required: [companies, total, page, page_size]
+      properties:
+        companies:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string, format: uuid}
+              slug: {type: string}
+              name: {type: string}
+              tagline: {type: string}
+              size: {type: string}
+              industries: {type: array, items: {type: string}}
+              hq_location_id: {type: [string, 'null']}
+              hq_country_code: {type: [string, 'null']}
+              logo_url: {type: [string, 'null']}
+        total: {type: integer}
+        page: {type: integer}
+        page_size: {type: integer}
+    Member:
+      type: object
+      properties:
+        user_id: {type: string, format: uuid}
+        name: {type: string}
+        email: {type: string}
+        role: {$ref: '#/components/schemas/MemberRole'}
+        status: {$ref: '#/components/schemas/MemberStatus'}
+        title: {type: string}
+        started_on: {type: [string, 'null']}
+        requested_at: {type: string, format: date-time}
+    CompanyDashboard:
+      type: object
+      properties:
+        total_jobs: {type: integer}
+        active_jobs: {type: integer}
+        closed_jobs: {type: integer}
+        applications: {type: integer}
+        admins: {type: integer}
+        hr: {type: integer}
+        employees: {type: integer}
+        pending_requests: {type: integer}
+
+    # ---- reference ----
+    ManifestEntry:
+      type: object
+      required: [file, sha256, updated_at]
+      properties:
+        file: {type: string, description: 'Name to fetch from /assets/{file}.'}
+        sha256: {type: string}
+        updated_at: {type: string, format: date-time}
+    AssetTerm:
+      type: object
+      required: [id, name, verified]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        verified: {type: boolean}
+    Location:
+      type: object
+      required: [id, parent_id, level, name, country_code]
+      properties:
+        id: {type: string, description: GeoNames id.}
+        parent_id: {type: [string, 'null']}
+        level: {type: string}
+        name: {type: string}
+        country_code: {type: string}
+        lat: {type: number}
+        lng: {type: number}
+    Rates:
+      type: object
+      required: [base, rates]
+      properties:
+        base: {type: string, const: INR}
+        rates: {type: object, additionalProperties: {type: number}, example: {USD: 95.05}}
+    Term:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        status: {$ref: '#/components/schemas/TermStatus'}
+        merged_into: {type: [integer, 'null']}
+        created_at: {type: string, format: date-time}
+        uses: {type: integer, description: How many jobs reference the term.}
+    TermPage:
+      type: object
+      required: [terms, total, page, page_size]
+      properties:
+        terms: {type: array, items: {$ref: '#/components/schemas/Term'}}
+        total: {type: integer}
+        page: {type: integer}
+        page_size: {type: integer}
+
+    # ---- settings ----
+    PublicSettings:
+      type: object
+      required: [daily_free_applications, apply_fee_paise, match_sort_fee_paise, job_post_fee_paise]
+      properties:
+        daily_free_applications: {type: integer, minimum: 0, maximum: 1000}
+        apply_fee_paise: {type: integer, minimum: 0, maximum: 10000000}
+        match_sort_fee_paise: {type: integer, minimum: 0, maximum: 10000000}
+        job_post_fee_paise: {type: integer, minimum: 0, maximum: 10000000}
+    Settings:
+      allOf:
+        - $ref: '#/components/schemas/PublicSettings'
+        - type: object
+          required: [fx_refresh_time]
+          properties:
+            fx_refresh_time: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: 'HH:MM, IST.'}
+            updated_at: {type: string, format: date-time, readOnly: true}
