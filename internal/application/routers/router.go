@@ -86,6 +86,13 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev", cfg.PlatformAdminIDs)
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
+	// Daily at 03:30 IST (and at startup): delete expired and idle sessions.
+	scheduler.Daily(bg, db, "sessions-purge", 3, 30, postgres.PurgeSessions(db, cfg.Session.IdleTimeout))
+
+	// Landing page counters: recomputed daily at 03:45 IST (and at startup), served by GET /stats.
+	statsRepo := postgres.NewStatsRepository(db)
+	scheduler.Daily(bg, db, "landing-stats", 3, 45, statsRepo.Refresh)
+	inbound.RegisterStatsRoutes(api, statsRepo)
 
 	// Settings: the admin's row, except the job-post fee, which comes from config for now.
 	settingsRepo := appsettings.WithJobPostFee(postgres.NewSettingsRepository(db), cfg.JobPostFeePaise)

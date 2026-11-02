@@ -4945,6 +4945,44 @@
                 }
             }
         },
+        "/api/v1/stats": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "stats"
+                ],
+                "summary": "Landing page platform counters (updated daily)",
+                "operationId": "getPlatformStats",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/adapters.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "$ref": "#/definitions/stats.Platform"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/wallet": {
             "get": {
                 "security": [
@@ -7295,6 +7333,36 @@
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "stats.Platform": {
+            "type": "object",
+            "properties": {
+                "companies": {
+                    "type": "integer"
+                },
+                "computed_at": {
+                    "type": "string"
+                },
+                "countries_with_jobs_companies": {
+                    "description": "CountriesWithJobsCompanies: company headquarters plus open jobs' locations.",
+                    "type": "integer"
+                },
+                "countries_with_users": {
+                    "description": "CountriesWithUsers: countries of the locations on candidate profiles.",
+                    "type": "integer"
+                },
+                "hr_professionals": {
+                    "description": "HRProfessionals: people who can recruit (current admins and HR of a\nlive company) or have posted a job.",
+                    "type": "integer"
+                },
+                "open_jobs": {
+                    "description": "OpenJobs: listings search shows (active, visible, listed, at most 30 days old).",
+                    "type": "integer"
+                },
+                "registered_users": {
+                    "type": "integer"
                 }
             }
         }

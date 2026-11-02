@@ -189,3 +189,33 @@ func TestTokensEncryptedAndBoundToRow(t *testing.T) {
 		t.Fatalf("token moved to another row: want ErrUnauthorized, got %v", err)
 	}
 }
+
+func TestPurgeSessions(t *testing.T) {
+	s, userID := testStore(t)
+	ctx := context.Background()
+	live := newSession(t, s, userID, time.Now().Add(time.Hour))
+	expired := newSession(t, s, userID, time.Now().Add(time.Hour))
+	idle := newSession(t, s, userID, time.Now().Add(time.Hour))
+	if _, err := s.pool.Exec(ctx, `UPDATE sessions SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, expired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at = NOW() - INTERVAL '2 hours' WHERE id = $1`, idle); err != nil {
+		t.Fatal(err)
+	}
+	if err := PurgeSessions(s.pool, time.Hour)(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id::text FROM sessions WHERE user_id = $1`, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for rows.Next() {
+		var id string
+		rows.Scan(&id)
+		left = append(left, id)
+	}
+	if len(left) != 1 || left[0] != live {
+		t.Fatalf("left after purge: %v, want only %s", left, live)
+	}
+}

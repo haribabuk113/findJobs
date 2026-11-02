@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"findJobs/internal/domain/auth"
+	"findJobs/internal/pkg/logger"
 	"findJobs/internal/pkg/tokencrypt"
 	"findJobs/internal/ports"
 )
@@ -153,4 +155,21 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) (str
 		return "", nil // deleted locally; nothing usable to revoke at IAM
 	}
 	return string(plain), nil
+}
+
+// PurgeSessions returns the daily session cleanup (system requirements S5):
+// it deletes sessions past their absolute expiry or unused for longer than
+// idle. Both are already refused on every request, so this only removes dead
+// rows and their encrypted IAM tokens.
+// ponytail: the IAM side isn't revoked here (that needs a decrypt and an IAM
+// call per row); IAM ends those sessions at its own 30-day limit.
+func PurgeSessions(pool *pgxpool.Pool, idle time.Duration) func(context.Context) error {
+	return func(ctx context.Context) error {
+		tag, err := pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= NOW() OR last_seen_at < NOW() - $1::interval`, idle)
+		if err == nil && tag.RowsAffected() > 0 {
+			l := logger.Get()
+			l.Info().Int64("deleted", tag.RowsAffected()).Msg("purged expired and idle sessions")
+		}
+		return err
+	}
 }
