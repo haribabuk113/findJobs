@@ -171,7 +171,9 @@ func (a *Allowance) Validate() error {
 	return nil
 }
 
-// Dashboard holds the non-money admin widgets (manual "Company dashboard").
+// Dashboard holds the admin widgets (manual "Company dashboard"). The wallet
+// balance and recent transactions come from the wallet route, the HR spending
+// summary from the members route.
 type Dashboard struct {
 	TotalJobs       int `json:"total_jobs"`
 	ActiveJobs      int `json:"active_jobs"`
@@ -181,6 +183,10 @@ type Dashboard struct {
 	HR              int `json:"hr"`
 	Employees       int `json:"employees"`
 	PendingRequests int `json:"pending_requests"`
+	// SpentThisMonthPaise is what job posts took from the company wallet this
+	// IST calendar month; TotalCapsPaise sums the limits of current HR staff.
+	SpentThisMonthPaise int64 `json:"spent_this_month_paise"`
+	TotalCapsPaise      int64 `json:"total_caps_paise"`
 }
 
 // Normalize trims and validates the input in place.

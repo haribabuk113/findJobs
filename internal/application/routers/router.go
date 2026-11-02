@@ -87,12 +87,15 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
 
+	// Settings: the admin's row, except the job-post fee, which comes from config for now.
+	settingsRepo := appsettings.WithJobPostFee(postgres.NewSettingsRepository(db), cfg.JobPostFeePaise)
+
 	// Job routes
-	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db), postgres.NewSettingsRepository(db)))
+	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db), settingsRepo))
 	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Platform admin routes
-	settingsHandler := inbound.NewSettingsHandler(appsettings.NewSettingsService(postgres.NewSettingsRepository(db)))
+	settingsHandler := inbound.NewSettingsHandler(appsettings.NewSettingsService(settingsRepo))
 	inbound.RegisterSettingsRoutes(api, api.Group("/admin"), settingsHandler, authHandler.RequirePlatformAdmin())
 
 	// Reference data: taxonomies, locations, exchange rates, published JSON files
@@ -108,10 +111,14 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	}
 	paymentService := apppayments.NewPaymentService(postgres.NewWalletRepository(db), gateway)
 	inbound.RegisterPaymentRoutes(api, inbound.NewPaymentsHandler(paymentService), authHandler.RequireUser())
+	if gateway != nil {
+		// Daily at 02:00 IST (and at startup): catch paid orders whose webhook never came, flag mismatches.
+		scheduler.Daily(bg, db, "payments-reconcile", 2, 0, paymentService.Reconcile)
+	}
 
 	// Recruiting: posting and managing jobs (paid posts charge through payments), job pages, recruiter cards
 	recruitingService := appjobs.NewRecruitingService(postgres.NewRecruitingRepository(db), referenceService,
-		postgres.NewSettingsRepository(db), paymentService)
+		settingsRepo, paymentService)
 	inbound.RegisterRecruitingRoutes(api, inbound.NewRecruitingHandler(recruitingService), authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Companies (uploads: local disk until the Internxt S3 adapter is configured)
@@ -133,7 +140,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService, analyticsService), authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Applications: Easy Apply with the daily free quota, external confirmations, applicant pipeline
-	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), postgres.NewSettingsRepository(db))
+	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), settingsRepo)
 	inbound.RegisterApplicationRoutes(api, inbound.NewApplicationsHandler(applicationService), authHandler.RequireUser())
 	return router, nil
 }

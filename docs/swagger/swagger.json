@@ -2400,12 +2400,13 @@
                     }
                 ],
                 "produces": [
-                    "application/json"
+                    "application/json",
+                    "text/csv"
                 ],
                 "tags": [
                     "wallet"
                 ],
-                "summary": "Company wallet: balance and transactions, newest first",
+                "summary": "Company wallet: balance and transactions, newest first (format=csv: full history as CSV)",
                 "operationId": "getCompanyWallet",
                 "parameters": [
                     {
@@ -2425,6 +2426,15 @@
                         "type": "integer",
                         "description": "Page size (default 20, max 50)",
                         "name": "page_size",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "csv"
+                        ],
+                        "type": "string",
+                        "description": "csv downloads the full transaction history",
+                        "name": "format",
                         "in": "query"
                     }
                 ],
@@ -5535,6 +5545,14 @@
                     "type": "integer"
                 },
                 "pending_requests": {
+                    "type": "integer"
+                },
+                "spent_this_month_paise": {
+                    "description": "Job-post debits from the company wallet this IST calendar month",
+                    "type": "integer"
+                },
+                "total_caps_paise": {
+                    "description": "Sum of the spending limits of current HR staff",
                     "type": "integer"
                 },
                 "total_jobs": {

@@ -25,6 +25,9 @@ type Config struct {
 	// StorageDir is where the local-disk ObjectStore keeps uploads.
 	StorageDir string
 	Razorpay   RazorpayConfig
+	// JobPostFeePaise is the paid job-post fee (₹2 by default). It comes from
+	// here for now, not the admin settings; 0 publishes paid posts free.
+	JobPostFeePaise int64
 }
 
 // RazorpayConfig is the payment gateway account. All three are set together,
@@ -164,6 +167,7 @@ func Load() (*Config, error) {
 			KeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
 			WebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
 		},
+		JobPostFeePaise: int64(l.int("JOB_POST_FEE_PAISE", 200)),
 		Session: SessionConfig{
 			TokenEncKeys: os.Getenv("TOKEN_ENC_KEYS"),
 			IdleTimeout:  l.duration("SESSION_IDLE_TIMEOUT", 168*time.Hour),
@@ -175,7 +179,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// validatePool checks the DB pool sizes and the gateway keys in every environment.
+// validatePool checks the DB pool sizes, the gateway keys and the job-post fee in every environment.
 func (c *Config) validatePool() []error {
 	var errs []error
 	if c.Database.MaxConns < 1 {
@@ -186,6 +190,10 @@ func (c *Config) validatePool() []error {
 	}
 	if rp := c.Razorpay; (rp.KeyID == "") != (rp.KeySecret == "") || (rp.KeyID == "") != (rp.WebhookSecret == "") {
 		errs = append(errs, errors.New("set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET together, or none of them"))
+	}
+	// The same bound as every admin-set fee (settings.MaxFeePaise).
+	if c.JobPostFeePaise < 0 || c.JobPostFeePaise > 10_000_000 {
+		errs = append(errs, fmt.Errorf("JOB_POST_FEE_PAISE must be 0 to 10000000 (paise), got %d", c.JobPostFeePaise))
 	}
 	return errs
 }

@@ -26,3 +26,21 @@ func TestPoolSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestJobPostFee(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "dev")
+	t.Setenv("JOB_POST_FEE_PAISE", "")
+	if cfg, err := Load(); err != nil || cfg.JobPostFeePaise != 200 {
+		t.Fatalf("default: %+v %v", cfg, err)
+	}
+	t.Setenv("JOB_POST_FEE_PAISE", "0")
+	if cfg, err := Load(); err != nil || cfg.JobPostFeePaise != 0 {
+		t.Fatalf("0 (free): %+v %v", cfg, err)
+	}
+	for _, v := range []string{"-1", "10000001", "2.5"} {
+		t.Setenv("JOB_POST_FEE_PAISE", v)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "JOB_POST_FEE_PAISE") {
+			t.Errorf("%s: got %v", v, err)
+		}
+	}
+}

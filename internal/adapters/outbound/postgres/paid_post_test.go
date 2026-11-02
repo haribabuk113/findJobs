@@ -106,6 +106,10 @@ func TestPaidJobPosts(t *testing.T) {
 	if debits != 3 {
 		t.Fatalf("job_post ledger rows: %d, want 3", debits)
 	}
+	// Dashboard money: 3 × ₹5 posts this month; the HR member's ₹6 cap.
+	if d, err := companyRepo.Dashboard(ctx, slug, admin); err != nil || d.SpentThisMonthPaise != 1500 || d.TotalCapsPaise != 600 {
+		t.Fatalf("dashboard money = %+v, %v", d, err)
+	}
 
 	// Offboarding releases the allowance.
 	if err := companyRepo.Offboard(ctx, slug, admin, hr); err != nil {
@@ -115,6 +119,9 @@ func TestPaidJobPosts(t *testing.T) {
 	pool.QueryRow(ctx, `SELECT limit_paise FROM company_members WHERE company_id = $1 AND user_id = $2`, companyID, hr).Scan(&limit)
 	if limit != 0 {
 		t.Fatalf("offboarded limit: %d", limit)
+	}
+	if d, _ := companyRepo.Dashboard(ctx, slug, admin); d.TotalCapsPaise != 0 {
+		t.Fatalf("total caps after offboarding: %d", d.TotalCapsPaise)
 	}
 
 	// Out of pocket: pending (hidden, can't be closed or reposted) until the webhook publishes it.
@@ -140,7 +147,7 @@ func TestPaidJobPosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 { // a replayed webhook is a no-op
-		if err := wallets.CompletePayment(ctx, payments.Paid{OrderID: order, PaymentID: "pay_j", AmountPaise: 500, Currency: "INR"}); err != nil {
+		if _, err := wallets.CompletePayment(ctx, payments.Paid{OrderID: order, PaymentID: "pay_j", AmountPaise: 500, Currency: "INR"}); err != nil {
 			t.Fatal(err)
 		}
 	}

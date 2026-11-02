@@ -72,6 +72,7 @@ services:
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
       - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-}
+      - JOB_POST_FEE_PAISE=${JOB_POST_FEE_PAISE:-200}
     depends_on:
       postgres:
         condition: service_healthy

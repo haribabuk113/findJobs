@@ -316,9 +316,14 @@ func (r *CompanyRepository) Dashboard(ctx context.Context, slug, userID string) 
 				COUNT(*) FILTER (WHERE status = 'current' AND role = 'admin'),
 				COUNT(*) FILTER (WHERE status = 'current' AND role = 'hr'),
 				COUNT(*) FILTER (WHERE status = 'current'),
-				COUNT(*) FILTER (WHERE status = 'pending')
+				COUNT(*) FILTER (WHERE status = 'pending'),
+				(SELECT COALESCE(SUM(-l.amount_paise), 0) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
+					WHERE w.company_id = $1 AND l.kind = 'job_post'
+					AND l.created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'),
+				COALESCE(SUM(limit_paise) FILTER (WHERE status = 'current' AND role = 'hr'), 0)
 			FROM company_members WHERE company_id = $1`, companyID).
-			Scan(&d.TotalJobs, &d.ActiveJobs, &d.Applications, &d.Admins, &d.HR, &d.Employees, &d.PendingRequests)
+			Scan(&d.TotalJobs, &d.ActiveJobs, &d.Applications, &d.Admins, &d.HR, &d.Employees, &d.PendingRequests,
+				&d.SpentThisMonthPaise, &d.TotalCapsPaise)
 	})
 	d.ClosedJobs = d.TotalJobs - d.ActiveJobs
 	return &d, err

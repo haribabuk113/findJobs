@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"findJobs/internal/adapters"
 	apppayments "findJobs/internal/application/payments"
@@ -54,20 +55,46 @@ func (h *PaymentsHandler) Wallet(ctx *gin.Context) {
 }
 
 // CompanyWallet handles GET /companies/{slug}/wallet?page=&page_size= (company admins).
+// With format=csv it downloads every transaction instead (paging is ignored).
 //
-//	@Summary	Company wallet: balance and transactions, newest first
+//	@Summary	Company wallet: balance and transactions, newest first (format=csv: full history as CSV)
 //	@ID			getCompanyWallet
 //	@Tags		wallet
-//	@Produce	json
+//	@Produce	json,text/csv
 //	@Security	sessionCookie
 //	@Param		slug		path	string	true	"Company slug"
 //	@Param		page		query	int		false	"Page (default 1)"
 //	@Param		page_size	query	int		false	"Page size (default 20, max 50)"
+//	@Param		format		query	string	false	"csv downloads the full transaction history"	Enums(csv)
 //	@Success	200	{object}	adapters.Response{data=domainpayments.Wallet}
 //	@Failure	400,401,403,404,500	{object}	adapters.Response
 //	@Router		/api/v1/companies/{slug}/wallet [get]
 func (h *PaymentsHandler) CompanyWallet(ctx *gin.Context) {
-	h.wallet(ctx, domainpayments.Owner{UserID: ctx.GetString(userIDKey), CompanySlug: ctx.Param("slug")})
+	owner := domainpayments.Owner{UserID: ctx.GetString(userIDKey), CompanySlug: ctx.Param("slug")}
+	switch ctx.Query("format") {
+	case "":
+		h.wallet(ctx, owner)
+	case "csv":
+		h.walletCSV(ctx, owner)
+	default:
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("format must be csv"))
+	}
+}
+
+func (h *PaymentsHandler) walletCSV(ctx *gin.Context, owner domainpayments.Owner) {
+	w, err := h.service.Ledger(ctx, owner)
+	if err != nil {
+		h.failErr(ctx, err)
+		return
+	}
+	// The slug is safe in the header: the lookup above matched it to a stored slug.
+	ctx.Header("Cache-Control", "private, no-store")
+	ctx.Header("Content-Type", "text/csv; charset=utf-8")
+	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="wallet-%s-%s.csv"`, owner.CompanySlug, time.Now().Format("2006-01-02")))
+	ctx.Status(http.StatusOK)
+	if err := domainpayments.WriteCSV(ctx.Writer, w.Entries); err != nil {
+		ctx.Error(err)
+	}
 }
 
 func (h *PaymentsHandler) wallet(ctx *gin.Context, owner domainpayments.Owner) {

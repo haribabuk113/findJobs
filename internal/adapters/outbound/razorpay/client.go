@@ -1,5 +1,5 @@
 // Package razorpay is the PaymentGateway adapter for Razorpay (D2): the
-// Orders API and order.paid webhooks.
+// Orders API, order.paid webhooks and the Payments list (reconciliation).
 package razorpay
 
 import (
@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"findJobs/internal/domain/payments"
@@ -102,4 +104,56 @@ func (c *Client) ParseWebhook(body []byte, signature string) (*payments.Paid, er
 	}
 	return &payments.Paid{OrderID: order.ID, PaymentID: w.Payload.Payment.Entity.ID,
 		AmountPaise: order.AmountPaid, Currency: order.Currency}, nil
+}
+
+// paymentsPage is Razorpay's maximum page size for GET /v1/payments.
+const paymentsPage = 100
+
+// CapturedPayments pages through GET /v1/payments for [from, to) and keeps the
+// captured ones that belong to an order. A refunded or failed payment never
+// counts as paid.
+// ponytail: stops at 100 pages (10,000 payments a window); page by day if volume gets there.
+func (c *Client) CapturedPayments(ctx context.Context, from, to time.Time) ([]payments.Paid, error) {
+	var paid []payments.Paid
+	for skip := 0; ; skip += paymentsPage {
+		if skip >= 100*paymentsPage {
+			return nil, fmt.Errorf("razorpay payments: more than %d in the window", skip)
+		}
+		q := url.Values{"from": {strconv.FormatInt(from.Unix(), 10)}, "to": {strconv.FormatInt(to.Unix()-1, 10)},
+			"count": {strconv.Itoa(paymentsPage)}, "skip": {strconv.Itoa(skip)}}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/payments?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.SetBasicAuth(c.keyID, c.keySecret)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("razorpay payments: %w", err)
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("razorpay payments returned %d: %s", resp.StatusCode, raw)
+		}
+		var page struct {
+			Items []struct {
+				ID       string `json:"id"`
+				OrderID  string `json:"order_id"`
+				Amount   int64  `json:"amount"`
+				Currency string `json:"currency"`
+				Status   string `json:"status"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("razorpay payments: %w", err)
+		}
+		for _, p := range page.Items {
+			if p.Status == "captured" && p.OrderID != "" {
+				paid = append(paid, payments.Paid{OrderID: p.OrderID, PaymentID: p.ID, AmountPaise: p.Amount, Currency: p.Currency})
+			}
+		}
+		if len(page.Items) < paymentsPage {
+			return paid, nil
+		}
+	}
 }

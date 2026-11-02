@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -72,10 +75,10 @@ func TestWalletTopupCreditsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := repo.CompletePayment(ctx, payments.Paid{OrderID: order, PaymentID: "pay_x", AmountPaise: 49_999, Currency: "INR"}); err != payments.ErrAmountMismatch {
+	if _, err := repo.CompletePayment(ctx, payments.Paid{OrderID: order, PaymentID: "pay_x", AmountPaise: 49_999, Currency: "INR"}); err != payments.ErrAmountMismatch {
 		t.Fatalf("short payment: err = %v, want ErrAmountMismatch", err)
 	}
-	if err := repo.CompletePayment(ctx, payments.Paid{OrderID: "order_nope", AmountPaise: 50_000, Currency: "INR"}); err != payments.ErrUnknownOrder {
+	if _, err := repo.CompletePayment(ctx, payments.Paid{OrderID: "order_nope", AmountPaise: 50_000, Currency: "INR"}); err != payments.ErrUnknownOrder {
 		t.Fatalf("unknown order: err = %v", err)
 	}
 
@@ -83,8 +86,15 @@ func TestWalletTopupCreditsOnce(t *testing.T) {
 	paid := payments.Paid{OrderID: order, PaymentID: "pay_1", AmountPaise: 50_000, Currency: "INR"}
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
+	var applied atomic.Int32
 	for range 8 {
-		wg.Go(func() { errs <- repo.CompletePayment(ctx, paid) })
+		wg.Go(func() {
+			ok, err := repo.CompletePayment(ctx, paid)
+			if ok {
+				applied.Add(1)
+			}
+			errs <- err
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -93,12 +103,30 @@ func TestWalletTopupCreditsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if applied.Load() != 1 {
+		t.Fatalf("applied %d times, want 1", applied.Load())
+	}
 	w, err = repo.Wallet(ctx, me, 1, 20)
 	if err != nil || w.BalancePaise != 50_000 || w.Total != 1 || len(w.Entries) != 1 {
 		t.Fatalf("after top-up = %+v, %v", w, err)
 	}
 	if e := w.Entries[0]; e.Kind != "topup" || e.AmountPaise != 50_000 || e.BalanceAfterPaise != 50_000 || e.ActorName != "Payer" {
 		t.Fatalf("entry = %+v", e)
+	}
+	if all, err := repo.Wallet(ctx, me, 1, 0); err != nil || len(all.Entries) != 1 {
+		t.Fatalf("pageSize 0 (all entries) = %+v, %v", all, err)
+	}
+
+	// Reconciliation: the credited top-up has its ledger row; a paid one without it is reported.
+	since := time.Now().Add(-time.Hour)
+	orphan := "order_" + uuid.NewString()[:8]
+	if _, err := pool.Exec(ctx, `INSERT INTO payments (id, gateway_order_id, purpose, wallet_id, user_id, amount_paise, status, paid_at)
+		VALUES ($1, $2, 'topup', $3, $4, 700, 'paid', NOW())`, uuid.NewString(), orphan, walletID, user); err != nil {
+		t.Fatal(err)
+	}
+	unledgered, err := repo.UnledgeredTopups(ctx, since)
+	if err != nil || !slices.Contains(unledgered, orphan) || slices.Contains(unledgered, order) {
+		t.Fatalf("UnledgeredTopups = %v, %v; want %s and not %s", unledgered, err, orphan, order)
 	}
 
 	if _, err := pool.Exec(ctx, `UPDATE wallet_ledger SET amount_paise = 1 WHERE id = $1`, w.Entries[0].ID); err == nil {

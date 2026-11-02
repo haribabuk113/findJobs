@@ -94,7 +94,7 @@ func (s *recruiting) Post(ctx context.Context, userID, key string, in *jobs.Post
 		if err != nil {
 			return nil, err
 		}
-		// A fee of 0 (D5: the admin sets it) publishes paid posts free.
+		// A fee of 0 (JOB_POST_FEE_PAISE, default ₹2) publishes paid posts free.
 		if settings.JobPostFeePaise > 0 {
 			if key == "" {
 				return nil, &jobs.ValidationError{Field: "Idempotency-Key", Message: "a paid post needs an Idempotency-Key header"}

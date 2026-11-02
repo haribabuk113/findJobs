@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -68,7 +69,7 @@ func (r *WalletRepository) Wallet(ctx context.Context, owner payments.Owner, pag
 	rows, err := r.pool.Query(ctx, `
 		SELECT l.id, l.kind, l.amount_paise, l.balance_after_paise, COALESCE(u.name, ''), l.ref_type, l.ref_id, l.created_at
 		FROM wallet_ledger l LEFT JOIN users u ON u.id = l.actor_user_id
-		WHERE l.wallet_id = $1 ORDER BY l.id DESC LIMIT $2 OFFSET $3`, walletID, pageSize, (page-1)*pageSize)
+		WHERE l.wallet_id = $1 ORDER BY l.id DESC LIMIT NULLIF($2, 0) OFFSET $3`, walletID, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -104,10 +105,10 @@ func (r *WalletRepository) CreatePayment(ctx context.Context, p payments.Payment
 	return err
 }
 
-func (r *WalletRepository) CompletePayment(ctx context.Context, paid payments.Paid) error {
+func (r *WalletRepository) CompletePayment(ctx context.Context, paid payments.Paid) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -120,42 +121,55 @@ func (r *WalletRepository) CompletePayment(ctx context.Context, paid payments.Pa
 		SELECT id, wallet_id, job_id, user_id, amount_paise, status FROM payments WHERE gateway_order_id = $1 FOR UPDATE`,
 		paid.OrderID).Scan(&id, &walletID, &jobID, &userID, &amount, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return payments.ErrUnknownOrder
+		return false, payments.ErrUnknownOrder
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if status == "paid" {
-		return nil
+		return false, nil
 	}
 	if paid.AmountPaise != amount || paid.Currency != "INR" {
-		return payments.ErrAmountMismatch
+		return false, payments.ErrAmountMismatch
 	}
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status = 'paid', gateway_payment_id = $2, paid_at = NOW() WHERE id = $1`,
 		id, paid.PaymentID); err != nil {
-		return err
+		return false, err
 	}
 	if walletID == nil {
 		// A job post. Only a pending job is published; a job that left
 		// pending meanwhile (its company was deleted) stays as it is.
 		if jobID != nil {
 			if _, err := tx.Exec(ctx, `UPDATE jobs SET `+publishPending+` WHERE id = $1 AND status = 'pending_payment'`, *jobID); err != nil {
-				return err
+				return false, err
 			}
 		}
-		return tx.Commit(ctx)
+		return true, tx.Commit(ctx)
 	}
 	var balance int64
 	if err := tx.QueryRow(ctx, `UPDATE wallets SET balance_paise = balance_paise + $2, updated_at = NOW() WHERE id = $1
 		RETURNING balance_paise`, *walletID, amount).Scan(&balance); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO wallet_ledger (wallet_id, kind, amount_paise, balance_after_paise, actor_user_id, ref_type, ref_id, idempotency_key)
 		VALUES ($1, 'topup', $2, $3, $4, 'payment', $5, 'payment:' || $5)`, *walletID, amount, balance, userID, id); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
+}
+
+func (r *WalletRepository) UnledgeredTopups(ctx context.Context, since time.Time) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT p.gateway_order_id FROM payments p
+		LEFT JOIN wallet_ledger l ON l.idempotency_key = 'payment:' || p.id
+		WHERE p.purpose = 'topup' AND p.status = 'paid' AND p.paid_at >= $1
+			AND (l.id IS NULL OR l.amount_paise <> p.amount_paise)
+		ORDER BY p.paid_at`, since)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
 type queryRower interface {

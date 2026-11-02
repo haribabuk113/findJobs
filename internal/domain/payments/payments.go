@@ -69,6 +69,15 @@ type Paid struct {
 	Currency    string
 }
 
+// Reconciliation counts what one reconciliation run found.
+type Reconciliation struct {
+	Checked    int // captured gateway payments in the window
+	Applied    int // paid orders whose webhook never arrived, applied now
+	Unknown    int // payments for orders we never created (maybe another app's)
+	Mismatched int // paid amount or currency differs from the order
+	Unledgered int // paid top-ups without their matching ledger row
+}
+
 // ValidateTopup checks a top-up amount.
 func ValidateTopup(amountPaise int64) error {
 	if amountPaise < MinTopupPaise || amountPaise > MaxTopupPaise {
