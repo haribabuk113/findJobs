@@ -1,6 +1,9 @@
 package jobs
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
@@ -65,8 +68,12 @@ var (
 	Tiers              = []string{"Free", "Premium"}
 	ApplicationMethods = []string{"Easy apply", "External"}
 	PostedWithinDays   = []int{1, 3, 7, 9, 15, 30}
-	Sorts              = []string{"newest", "salary", "title"}
+	// Sorts: "match" (the manual's match score against the viewer's profile
+	// skills) needs an unlock_id bought for the same filters.
+	Sorts = []string{"newest", "salary", "title", SortMatch}
 )
+
+const SortMatch = "match"
 
 const (
 	MaxPageSize     = 50
@@ -108,8 +115,31 @@ type SearchCriteria struct {
 	RoundsExact   bool     `json:"interview_rounds_exact"` // false = "at most N rounds"
 	PostedWithin  int      `json:"posted_within_days"`
 	Sort          string   `json:"sort"`
+	UnlockID      string   `json:"unlock_id"` // sort=match: from POST /jobs/search/unlocks for these filters
 	Page          int      `json:"page"`
 	PageSize      int      `json:"page_size"`
+}
+
+// Unlock is a bought match-score sort for one set of filters.
+type Unlock struct {
+	ID           string `json:"unlock_id"`
+	ChargedPaise int64  `json:"charged_paise"` // 0 when these filters were already unlocked, or the fee is 0
+}
+
+// UnlockHash identifies the filters an unlock is bought for: the normalized
+// criteria without sort, page or unlock id, lists in sorted order. Paging or
+// re-sorting keeps the unlock; any filter change needs a new one (manual:
+// "locked again when the search criteria change").
+func (c SearchCriteria) UnlockHash() string {
+	c.Sort, c.UnlockID, c.Page, c.PageSize = "", "", 0, 0
+	for _, list := range []*[]string{&c.LocationIDs, &c.NoticePeriods, &c.Relocation, &c.WorkModes, &c.WorkTypes,
+		&c.Categories, &c.Levels, &c.Tiers, &c.Applications, &c.Industries, &c.CompanySizes, &c.Benefits, &c.JobIDs} {
+		*list = slices.Sorted(slices.Values(*list)) // a sorted copy: the caller's slices stay as sent
+	}
+	c.Designations, c.Skills = slices.Sorted(slices.Values(c.Designations)), slices.Sorted(slices.Values(c.Skills))
+	raw, _ := json.Marshal(c) // fields marshal in declaration order
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // Normalize applies defaults and validates. Unknown enum values are rejected
@@ -172,7 +202,10 @@ func (c *SearchCriteria) Normalize() error {
 		c.Sort = "newest"
 	}
 	if !slices.Contains(Sorts, c.Sort) {
-		return &ValidationError{Field: "sort", Message: "sort must be newest, salary or title"}
+		return &ValidationError{Field: "sort", Message: "sort must be newest, salary, title or match"}
+	}
+	if c.UnlockID != "" && !uuidPattern.MatchString(c.UnlockID) {
+		return &ValidationError{Field: "unlock_id", Message: "unknown unlock_id"}
 	}
 	if c.Page < 1 {
 		c.Page = 1

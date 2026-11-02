@@ -36,7 +36,8 @@ func openJob(ctx context.Context, tx pgx.Tx, jobID string) (method string, recru
 	return
 }
 
-func (r *ApplicationRepository) Apply(ctx context.Context, userID, jobID string, day time.Time, limit int) (*applications.Application, error) {
+func (r *ApplicationRepository) Apply(ctx context.Context, userID, jobID string, day time.Time, limit int,
+	applyFeePaise int64, confirmPaid bool) (*applications.Application, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -69,13 +70,46 @@ func (r *ApplicationRepository) Apply(ctx context.Context, userID, jobID string,
 	if err != nil {
 		return nil, alreadyApplied(err)
 	}
-	if err := takeFree(ctx, tx, userID, day, limit, 1); err != nil {
+	switch err := takeFree(ctx, tx, userID, day, limit, 1); {
+	case err == errNoFreeLeft:
+		if err := payApplication(ctx, tx, userID, a.ID, applyFeePaise, confirmPaid); err != nil {
+			return nil, err
+		}
+	case err != nil:
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return r.one(ctx, userID, a.ID)
+}
+
+// payApplication charges the apply fee for an application past the free
+// allowance and marks it paid. Without the candidate's confirmation, or with
+// too small a balance, nothing is charged (PaymentRequiredError). A fee of 0
+// means an admin made paid applications free.
+func payApplication(ctx context.Context, tx pgx.Tx, userID, applicationID string, feePaise int64, confirmed bool) error {
+	if feePaise == 0 {
+		return nil
+	}
+	if !confirmed {
+		balance, err := walletBalance(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		return &applications.PaymentRequiredError{Reason: applications.ReasonConfirmPaid, FeePaise: feePaise, BalancePaise: balance,
+			Message: "you've used today's free applications; confirm a paid application to continue"}
+	}
+	ok, balance, err := debitWallet(ctx, tx, "user_id", userID, userID, feePaise, "apply", "application", applicationID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &applications.PaymentRequiredError{Reason: applications.ReasonInsufficientBalance, FeePaise: feePaise, BalancePaise: balance,
+			Message: "your wallet balance is too low for a paid application; top up first"}
+	}
+	_, err = tx.Exec(ctx, `UPDATE applications SET paid = TRUE WHERE id = $1`, applicationID)
+	return err
 }
 
 // loadDossier reads the candidate's profile as the recruiter receives it:
@@ -107,8 +141,11 @@ func loadDossier(ctx context.Context, tx pgx.Tx, userID string) (dossier []byte,
 	return dossier, userSkills, err
 }
 
+// errNoFreeLeft: the free applications asked for don't all fit in the day's limit.
+var errNoFreeLeft = errors.New("no free applications left")
+
 // takeFree takes n of day's free applications, never past the limit (a limit
-// of 0 means none): ErrQuotaExhausted when they don't all fit.
+// of 0 means none): errNoFreeLeft when they don't all fit.
 func takeFree(ctx context.Context, tx pgx.Tx, userID string, day time.Time, limit, n int) error {
 	var used int
 	err := tx.QueryRow(ctx, `
@@ -116,7 +153,7 @@ func takeFree(ctx context.Context, tx pgx.Tx, userID string, day time.Time, limi
 		ON CONFLICT (user_id, day_ist) DO UPDATE SET used = apply_quota.used + $4::int WHERE apply_quota.used + $4::int <= $3::int
 		RETURNING used`, userID, day, limit, n).Scan(&used)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return applications.ErrQuotaExhausted
+		return errNoFreeLeft
 	}
 	return err
 }
@@ -130,7 +167,7 @@ func alreadyApplied(err error) error {
 }
 
 func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jobIDs []string, day time.Time, limit int,
-	applyFeePaise int64, dryRun bool) (*applications.BulkResult, error) {
+	applyFeePaise int64, dryRun bool, confirmPaidCount int) (*applications.BulkResult, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -168,8 +205,12 @@ func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jo
 	if err != nil {
 		return nil, err
 	}
+	balance, err := walletBalance(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
 	res := &applications.BulkResult{BulkPlan: applications.PlanBulk(jobs, limit-used, applyFeePaise),
-		DryRun: dryRun, Applications: []applications.Application{}}
+		WalletPaise: balance, DryRun: dryRun, Applications: []applications.Application{}}
 	var dossier []byte
 	var userSkills []int64
 	if len(res.EasyApply) > 0 {
@@ -181,18 +222,32 @@ func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jo
 	if dryRun {
 		return res, nil
 	}
-	if err := res.Err(); err != nil {
+	if err := res.Err(confirmPaidCount); err != nil {
+		if pe, ok := err.(*applications.PaymentRequiredError); ok {
+			pe.BalancePaise = balance
+		}
 		return nil, err
 	}
+	if res.FeePaise > balance {
+		return nil, &applications.PaymentRequiredError{Reason: applications.ReasonInsufficientBalance, FeePaise: res.FeePaise,
+			BalancePaise: balance, Message: "nothing was applied; your wallet balance is too low for the paid applications; top up first"}
+	}
 
-	// ponytail: one INSERT per job (≤50); use a pgx.Batch if bulk apply latency matters.
-	for _, jobID := range res.EasyApply {
+	// ponytail: one INSERT (and one debit when paid) per job (≤50); use a pgx.Batch if bulk apply latency matters.
+	for i, jobID := range res.EasyApply {
 		pct, matched, unmatched := applications.MatchScore(jobSkills[jobID], userSkills)
-		if _, err := tx.Exec(ctx, `
+		var id string
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO applications (user_id, job_id, apply_type, calculated_match_score_pct, matched_skill_ids,
 				unmatched_skill_ids, dossier)
-			VALUES ($1, $2, 'platform', $3, $4, $5, $6)`, userID, jobID, pct, matched, unmatched, dossier); err != nil {
+			VALUES ($1, $2, 'platform', $3, $4, $5, $6) RETURNING id`, userID, jobID, pct, matched, unmatched, dossier).Scan(&id); err != nil {
 			return nil, alreadyApplied(err)
+		}
+		// The first Free jobs use the free allowance; the rest are paid (confirmed above).
+		if i >= res.Free {
+			if err := payApplication(ctx, tx, userID, id, applyFeePaise, true); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, jobID := range res.External {
@@ -201,8 +256,11 @@ func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jo
 			return nil, alreadyApplied(err)
 		}
 	}
-	if len(res.EasyApply) > 0 {
-		if err := takeFree(ctx, tx, userID, day, limit, len(res.EasyApply)); err != nil {
+	if res.Free > 0 {
+		// Fails when another request used free applications since the plan was read.
+		if err := takeFree(ctx, tx, userID, day, limit, res.Free); err == errNoFreeLeft {
+			return nil, applications.ErrQuotaChanged
+		} else if err != nil {
 			return nil, err
 		}
 	}
@@ -274,8 +332,13 @@ func (r *ApplicationRepository) one(ctx context.Context, userID, id string) (*ap
 	return &a, err
 }
 
-func (r *ApplicationRepository) QuotaUsed(ctx context.Context, userID string, day time.Time) (int, error) {
-	return quotaUsed(ctx, r.pool, userID, day)
+func (r *ApplicationRepository) QuotaUsed(ctx context.Context, userID string, day time.Time) (int, int64, error) {
+	used, err := quotaUsed(ctx, r.pool, userID, day)
+	if err != nil {
+		return 0, 0, err
+	}
+	balance, err := walletBalance(ctx, r.pool, userID)
+	return used, balance, err
 }
 
 // quotaUsed reads through the pool, or inside a transaction.

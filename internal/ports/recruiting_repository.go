@@ -19,8 +19,17 @@ type RecruitingRepository interface {
 	// CurrencyKnown reports whether an exchange rate exists for code
 	CurrencyKnown(ctx context.Context, code string) (bool, error)
 
-	// Create stores a new job
-	Create(ctx context.Context, rec *jobs.Record) error
+	// Create stores a new job. With a charge, company credits are debited in
+	// the same transaction (wallet and the poster's allowance), and an
+	// out-of-pocket job is stored as pending_payment. ErrPostInProgress when
+	// the user already posted with rec.IdempotencyKey.
+	Create(ctx context.Context, rec *jobs.Record, charge *jobs.Charge) error
+	// PostByKey is the id of the user's job posted with an Idempotency-Key ("" if none)
+	PostByKey(ctx context.Context, userID, key string) (string, error)
+	// Pending reports whether the user's job awaits its payment (ErrJobNotFound if not theirs)
+	Pending(ctx context.Context, id, userID string) (bool, error)
+	// PublishPending publishes the user's pending job without payment (the fee became 0)
+	PublishPending(ctx context.Context, id, userID string) error
 	// Editable returns the tier and company of a job the user posted
 	Editable(ctx context.Context, id, userID string) (tier string, companySlug *string, companyName string, err error)
 	// Update rewrites a job the user posted (tier and company never change)

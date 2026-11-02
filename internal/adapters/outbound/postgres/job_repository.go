@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"findJobs/internal/domain/jobs"
@@ -134,6 +136,15 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		"salary": "j.normalized_inr_amount DESC NULLS LAST, j.posted_at DESC, j.id",
 		"title":  "j.title, j.id",
 	}[c.Sort]
+	if c.Sort == jobs.SortMatch {
+		// The manual's score, as applications.MatchScore computes it: the share
+		// of the job's skills the viewer's profile has, rounded to a percent.
+		// ponytail: a correlated subquery per row; precompute if search gets slow.
+		order = `CASE WHEN cardinality(j.skill_ids) = 0 THEN 0 ELSE
+			(200 * (SELECT COUNT(*) FROM unnest(j.skill_ids) s
+				WHERE s IN (SELECT ps.skill_id FROM profile_skills ps WHERE ps.user_id = ` + q.arg(userID) + `::uuid))
+			+ cardinality(j.skill_ids)) / (2 * cardinality(j.skill_ids)) END DESC, j.posted_at DESC, j.id`
+	}
 
 	sql := `SELECT ` + jobCardColumns + `, COUNT(*) OVER ()
 		FROM jobs j LEFT JOIN companies co ON co.id = j.company_id
@@ -184,4 +195,43 @@ func jobCardTargets(j *jobs.Job) []any {
 // escapeLike stops user input acting as LIKE wildcards.
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+func (r *JobRepository) Unlock(ctx context.Context, userID, criteriaHash string, feePaise int64) (*jobs.Unlock, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	var u jobs.Unlock
+	err = tx.QueryRow(ctx, `INSERT INTO search_unlocks (user_id, criteria_hash, fee_paise) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, criteria_hash) DO NOTHING RETURNING id`, userID, criteriaHash, feePaise).Scan(&u.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already unlocked (a parallel request may just have done it): no charge.
+		err = tx.QueryRow(ctx, `SELECT id FROM search_unlocks WHERE user_id = $1 AND criteria_hash = $2`,
+			userID, criteriaHash).Scan(&u.ID)
+		return &u, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	if feePaise > 0 {
+		ok, balance, err := debitWallet(ctx, tx, "user_id", userID, userID, feePaise, "match_unlock", "search_unlock", u.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, &jobs.PaymentRequiredError{Reason: jobs.ReasonInsufficientBalance, FeePaise: feePaise, BalancePaise: balance,
+				Message: "your wallet balance is too low to unlock match sorting; top up first"}
+		}
+		u.ChargedPaise = feePaise
+	}
+	return &u, tx.Commit(ctx)
+}
+
+func (r *JobRepository) UnlockValid(ctx context.Context, userID, unlockID, criteriaHash string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM search_unlocks WHERE id = $1 AND user_id = $2 AND criteria_hash = $3)`,
+		unlockID, userID, criteriaHash).Scan(&ok)
+	return ok, err
 }

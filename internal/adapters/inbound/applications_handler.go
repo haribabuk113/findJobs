@@ -50,9 +50,18 @@ type jobRef struct {
 	JobID string `json:"job_id"`
 }
 
+type applyRequest struct {
+	JobID string `json:"job_id"`
+	// ConfirmPaid agrees to pay the apply fee from the wallet when today's
+	// free applications are used up.
+	ConfirmPaid bool `json:"confirm_paid"`
+}
+
 type bulkApplyRequest struct {
 	JobIDs []string `json:"job_ids"`
 	DryRun bool     `json:"dry_run"`
+	// ConfirmPaidCount must equal the dry run's paid count when it's above 0.
+	ConfirmPaidCount int `json:"confirm_paid_count"`
 }
 
 type stageRequest struct {
@@ -72,24 +81,28 @@ func (h *ApplicationsHandler) bindJob(ctx *gin.Context) (string, bool) {
 	return in.JobID, true
 }
 
-// Apply handles POST /applications {"job_id"}: Easy Apply.
+// Apply handles POST /applications {"job_id", "confirm_paid"}: Easy Apply.
+// Past today's free applications it charges the apply fee when confirm_paid;
+// otherwise 402 with data {reason, fee_paise, balance_paise}.
 //
-//	@Summary	Easy Apply to a job
+//	@Summary	Easy Apply to a job (free, or paid from the wallet with confirm_paid)
 //	@ID			easyApply
 //	@Tags		applications
 //	@Accept		json
 //	@Produce	json
 //	@Security	sessionCookie
-//	@Param		body	body	jobRef	true	"Job to apply to"
+//	@Param		body	body	applyRequest	true	"Job to apply to"
 //	@Success	201	{object}	adapters.Response{data=domainapplications.Application}
-//	@Failure	400,401,402,404,409,500	{object}	adapters.Response
+//	@Failure	402	{object}	adapters.Response{data=domainapplications.PaymentRequiredError}
+//	@Failure	400,401,404,409,500	{object}	adapters.Response
 //	@Router		/api/v1/applications [post]
 func (h *ApplicationsHandler) Apply(ctx *gin.Context) {
-	jobID, ok := h.bindJob(ctx)
-	if !ok {
+	var in applyRequest
+	if err := ctx.ShouldBindJSON(&in); err != nil || in.JobID == "" || len(in.JobID) > 150 {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give a job_id"))
 		return
 	}
-	result, err := h.service.Apply(ctx, ctx.GetString(userIDKey), jobID)
+	result, err := h.service.Apply(ctx, ctx.GetString(userIDKey), in.JobID, in.ConfirmPaid)
 	h.respond(ctx, http.StatusCreated, "Application submitted", result, err)
 }
 
@@ -127,7 +140,8 @@ func (h *ApplicationsHandler) ApplyExternal(ctx *gin.Context) {
 //	@Param		body	body	bulkApplyRequest	true	"Jobs; dry_run only checks"
 //	@Success	200	{object}	adapters.Response{data=domainapplications.BulkResult}
 //	@Success	201	{object}	adapters.Response{data=domainapplications.BulkResult}
-//	@Failure	400,401,402,409,500	{object}	adapters.Response
+//	@Failure	402	{object}	adapters.Response{data=domainapplications.PaymentRequiredError}
+//	@Failure	400,401,409,500	{object}	adapters.Response
 //	@Router		/api/v1/applications/bulk [post]
 func (h *ApplicationsHandler) ApplyBulk(ctx *gin.Context) {
 	var in bulkApplyRequest
@@ -135,7 +149,7 @@ func (h *ApplicationsHandler) ApplyBulk(ctx *gin.Context) {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give job_ids"))
 		return
 	}
-	result, err := h.service.ApplyBulk(ctx, ctx.GetString(userIDKey), in.JobIDs, in.DryRun)
+	result, err := h.service.ApplyBulk(ctx, ctx.GetString(userIDKey), in.JobIDs, in.DryRun, in.ConfirmPaidCount)
 	if in.DryRun {
 		h.respond(ctx, http.StatusOK, "Bulk application checked", result, err)
 		return
@@ -339,7 +353,8 @@ func (h *ApplicationsHandler) failErr(ctx *gin.Context, err error) {
 	case domainapplications.IsConflict(err):
 		h.fail(ctx, http.StatusConflict, err)
 	case domainapplications.IsPaymentRequired(err):
-		h.fail(ctx, http.StatusPaymentRequired, err)
+		// The error is also the data: reason, fee and balance for the modal.
+		ctx.JSON(http.StatusPaymentRequired, adapters.BuildErrorResponse("402 Payment Required", err, err))
 	default:
 		ctx.Error(err)
 		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))

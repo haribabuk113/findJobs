@@ -212,7 +212,8 @@ func (r *CompanyRepository) Members(ctx context.Context, slug, userID, status st
 	var members []companies.Member
 	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
 		rows, err := tx.Query(ctx, `
-			SELECT m.user_id::text, u.name, u.email, m.role, m.status, m.title, m.started_on::text, m.created_at
+			SELECT m.user_id::text, u.name, u.email, m.role, m.status, m.title, m.started_on::text, m.created_at,
+				m.cap_type, m.limit_paise, `+spentNow+`
 			FROM company_members m JOIN users u ON u.id = m.user_id
 			WHERE m.company_id = $1 AND m.status = $2
 			ORDER BY m.created_at DESC`, companyID, status)
@@ -386,11 +387,22 @@ func endMembership(ctx context.Context, tx pgx.Tx, companyID, userID, lastAdminM
 			return err
 		}
 	}
-	// Role drops to employee: a past member keeps no rights. (Credit release
-	// arrives with the payments section.)
-	_, err = tx.Exec(ctx, `UPDATE company_members SET status = 'past', role = 'employee', updated_at = NOW()
-		WHERE company_id = $1 AND user_id = $2`, companyID, userID)
+	// Role drops to employee: a past member keeps no rights, and their
+	// spending allowance goes back to ₹0 (a returning member starts over).
+	_, err = tx.Exec(ctx, `UPDATE company_members SET status = 'past', role = 'employee', limit_paise = 0, spent_paise = 0,
+		spent_month = NULL, updated_at = NOW() WHERE company_id = $1 AND user_id = $2`, companyID, userID)
 	return err
+}
+
+func (r *CompanyRepository) SetAllowance(ctx context.Context, slug, adminID, memberID string, a companies.Allowance) error {
+	return r.asAdmin(ctx, slug, adminID, func(tx pgx.Tx, companyID string) error {
+		tag, err := tx.Exec(ctx, `UPDATE company_members SET cap_type = $3, limit_paise = $4, updated_at = NOW()
+			WHERE company_id = $1 AND user_id = $2 AND status = 'current' AND role = 'hr'`, companyID, memberID, a.CapType, a.LimitPaise)
+		if err == nil && tag.RowsAffected() == 0 {
+			return &companies.NotFoundError{Message: "spending limits apply to current HR members only"}
+		}
+		return err
+	})
 }
 
 func replaceShowcase(ctx context.Context, tx pgx.Tx, companyID string, in *companies.Input) error {

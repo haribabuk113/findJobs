@@ -26,7 +26,8 @@ func NewRecruitingRepository(pool *pgxpool.Pool) ports.RecruitingRepository {
 
 func (r *RecruitingRepository) PosterCompanies(ctx context.Context, userID string) ([]jobs.PosterCompany, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT c.slug, c.name, m.role, c.hq_location_id, c.branch_location_ids
+		SELECT c.slug, c.name, m.role, c.hq_location_id, c.branch_location_ids,
+			CASE m.role WHEN 'admin' THEN NULL WHEN 'hr' THEN GREATEST(0, m.limit_paise - `+spentNow+`) ELSE 0 END
 		FROM company_members m JOIN companies c ON c.id = m.company_id
 		WHERE m.user_id = $1 AND m.status = 'current' AND c.deleted_at IS NULL ORDER BY c.name`, userID)
 	if err != nil {
@@ -71,23 +72,73 @@ func (r *RecruitingRepository) CurrencyKnown(ctx context.Context, code string) (
 // INR baseline at post time; the daily rate refresh keeps it current.
 const inrMax = `ROUND($8::numeric * (SELECT rate_to_inr FROM exchange_rates WHERE currency = $9), 2)`
 
-func (r *RecruitingRepository) Create(ctx context.Context, rec *jobs.Record) error {
+func (r *RecruitingRepository) Create(ctx context.Context, rec *jobs.Record, charge *jobs.Charge) error {
 	if rec.SkillIDs == nil {
 		rec.SkillIDs = []int64{} // NOT NULL column; nil would be sent as NULL
 	}
-	_, err := r.pool.Exec(ctx, `
+	status, visible := jobs.StateActive, rec.Listed
+	if charge != nil && charge.Method == jobs.PayOutOfPocket {
+		status, visible = jobs.StatePending, false
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	_, err = tx.Exec(ctx, `
 		INSERT INTO jobs (id, share_hash, recruiter_id, company_id, company_name_text, title, designation_id,
 			skill_ids, salary_max, currency, normalized_inr_amount, hide_salary, experience_years, location_ids,
 			location_type, location_label, work_modes, work_types, notice_periods, relocation, interview_stages,
-			interview_rounds, tier, application, external_url, description_md, is_visible)
+			interview_rounds, tier, application, external_url, description_md, is_visible, status, post_idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $10, $8, $9, `+inrMax+`, $11, $12, $13, $14, '', $15, $16, $17, $18,
-			$19, $20, $21, $22, $23, $24, $25)`,
+			$19, $20, $21, $22, $23, $24, $25, $26, NULLIF($27, ''))`,
 		rec.ID, rec.ShareHash, rec.RecruiterID, rec.CompanyID, rec.CompanyName, rec.Designation, rec.DesignationID,
 		rec.SalaryMax, rec.Currency, rec.SkillIDs, rec.HideSalary, rec.MinExperience, rec.LocationIDs,
 		locationType(rec), rec.WorkModes, rec.WorkTypes, rec.NoticePeriods, rec.Relocation, rec.InterviewStages,
-		rec.RoundCount(), rec.DBTier, rec.Application, rec.ExternalURL, rec.Description, rec.Listed)
+		rec.RoundCount(), rec.DBTier, rec.Application, rec.ExternalURL, rec.Description, visible, status, rec.IdempotencyKey)
+	if isUniqueViolation(err) && rec.IdempotencyKey != "" {
+		return jobs.ErrPostInProgress // a parallel retry of the same post got there first
+	}
+	if err != nil {
+		return err
+	}
+	if charge != nil && charge.Method == jobs.PayCompanyCredits {
+		if err := chargeCompanyPost(ctx, tx, *rec.CompanyID, rec.RecruiterID, rec.ID, charge.FeePaise); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *RecruitingRepository) PostByKey(ctx context.Context, userID, key string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `SELECT id FROM jobs WHERE recruiter_id = $1 AND post_idempotency_key = $2`, userID, key).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+func (r *RecruitingRepository) Pending(ctx context.Context, id, userID string) (bool, error) {
+	var pending bool
+	err := r.pool.QueryRow(ctx, `SELECT status = 'pending_payment' FROM jobs WHERE id = $1 AND recruiter_id = $2`, id, userID).Scan(&pending)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, jobs.ErrJobNotFound
+	}
+	return pending, err
+}
+
+func (r *RecruitingRepository) PublishPending(ctx context.Context, id, userID string) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE jobs SET `+publishPending+` WHERE id = $1 AND recruiter_id = $2 AND status = 'pending_payment'`, id, userID)
+	if err == nil && tag.RowsAffected() == 0 {
+		return jobs.ErrAlreadyPaid
+	}
 	return err
 }
+
+// publishPending is the SET list that publishes a paid pending job: its
+// 30-day window starts now.
+const publishPending = `status = 'active', is_visible = (tier = 'Premium'), posted_at = NOW(), updated_at = NOW()`
 
 func (r *RecruitingRepository) Editable(ctx context.Context, id, userID string) (string, *string, string, error) {
 	var tier, name string
@@ -124,12 +175,26 @@ func (r *RecruitingRepository) Update(ctx context.Context, rec *jobs.Record) err
 }
 
 func (r *RecruitingRepository) Close(ctx context.Context, id, userID string) error {
+	// A pending job stays pending: closed, it could be reposted without paying.
 	tag, err := r.pool.Exec(ctx, `UPDATE jobs SET status = 'closed', is_visible = FALSE, updated_at = NOW()
-		WHERE id = $1 AND recruiter_id = $2`, id, userID)
+		WHERE id = $1 AND recruiter_id = $2 AND status <> 'pending_payment'`, id, userID)
 	if err == nil && tag.RowsAffected() == 0 {
-		return jobs.ErrJobNotFound
+		return r.whyUnchanged(ctx, id, userID, jobs.ErrJobNotFound)
 	}
 	return err
+}
+
+// whyUnchanged explains an update that matched no row: the job awaits its
+// payment, isn't the user's, or (otherwise) fallback.
+func (r *RecruitingRepository) whyUnchanged(ctx context.Context, id, userID string, fallback error) error {
+	pending, err := r.Pending(ctx, id, userID)
+	switch {
+	case err != nil:
+		return err
+	case pending:
+		return jobs.ErrAwaitingPayment
+	}
+	return fallback
 }
 
 func (r *RecruitingRepository) Repost(ctx context.Context, id, userID string) error {
@@ -137,7 +202,7 @@ func (r *RecruitingRepository) Repost(ctx context.Context, id, userID string) er
 	// reposted while the poster is still a current member.
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE jobs j SET status = 'active', posted_at = NOW(), is_visible = (j.tier = 'Premium'), updated_at = NOW()
-		WHERE j.id = $1 AND j.recruiter_id = $2 AND (j.company_id IS NULL OR EXISTS (
+		WHERE j.id = $1 AND j.recruiter_id = $2 AND j.status <> 'pending_payment' AND (j.company_id IS NULL OR EXISTS (
 			SELECT 1 FROM company_members m JOIN companies c ON c.id = m.company_id
 			WHERE m.company_id = j.company_id AND m.user_id = $2 AND m.status = 'current' AND c.deleted_at IS NULL))`,
 		id, userID)
@@ -145,16 +210,14 @@ func (r *RecruitingRepository) Repost(ctx context.Context, id, userID string) er
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		if _, _, _, err := r.Editable(ctx, id, userID); err != nil {
-			return err
-		}
-		return &jobs.ForbiddenError{Message: "you're no longer a member of this job's company, so it can't be reposted"}
+		return r.whyUnchanged(ctx, id, userID,
+			&jobs.ForbiddenError{Message: "you're no longer a member of this job's company, so it can't be reposted"})
 	}
 	return nil
 }
 
 // state derives active / closed / expired (past the 30-day public window).
-const jobState = `CASE WHEN j.status = 'closed' THEN 'closed'
+const jobState = `CASE WHEN j.status IN ('closed', 'pending_payment') THEN j.status
 	WHEN j.posted_at < NOW() - INTERVAL '30 days' THEN 'expired' ELSE 'active' END`
 
 func (r *RecruitingRepository) Mine(ctx context.Context, userID, state string) ([]jobs.Posted, error) {

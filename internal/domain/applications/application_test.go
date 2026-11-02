@@ -42,7 +42,7 @@ func TestFilterNormalize(t *testing.T) {
 			t.Errorf("%+v: want validation error, got %v", bad, err)
 		}
 	}
-	if q := NewQuota(15, 20); q.Remaining != 0 {
+	if q := NewQuota(15, 20, 500, 0); q.Remaining != 0 {
 		t.Fatalf("remaining never negative: %+v", q)
 	}
 }

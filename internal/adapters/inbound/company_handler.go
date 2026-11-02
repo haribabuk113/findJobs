@@ -41,6 +41,7 @@ func RegisterCompanyRoutes(api *gin.RouterGroup, h *CompanyHandler, optionalUser
 	c.POST("/:slug/members/:user_id/reject", requireUser, h.Reject)
 	c.PATCH("/:slug/members/:user_id", requireUser, h.SetRole)
 	c.POST("/:slug/members/:user_id/offboard", requireUser, h.Offboard)
+	c.PUT("/:slug/members/:user_id/allowance", requireUser, h.SetAllowance)
 	c.POST("/:slug/leave", requireUser, h.Leave)
 
 	api.GET("/files/img/:name", h.File)
@@ -334,6 +335,30 @@ func (h *CompanyHandler) SetRole(ctx *gin.Context) {
 	}
 	err := h.service.SetMemberRole(ctx, ctx.GetString(userIDKey), ctx.Param("slug"), ctx.Param("user_id"), body.Role)
 	h.respond(ctx, http.StatusOK, "Role updated successfully", nil, err)
+}
+
+// SetAllowance handles PUT /companies/:slug/members/:user_id/allowance {"cap_type", "limit_paise"}.
+//
+//	@Summary	Set an HR member's company-credit spending limit
+//	@ID			setMemberAllowance
+//	@Tags		companies
+//	@Accept		json
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		slug	path	string	true	"Company slug"
+//	@Param		user_id	path	string	true	"Member user id (a current HR member)"
+//	@Param		body	body	domaincompanies.Allowance	true	"monthly or total, and the limit in paise"
+//	@Success	200	{object}	adapters.Response
+//	@Failure	400,401,403,404,500	{object}	adapters.Response
+//	@Router		/api/v1/companies/{slug}/members/{user_id}/allowance [put]
+func (h *CompanyHandler) SetAllowance(ctx *gin.Context) {
+	var body domaincompanies.Allowance
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid allowance"))
+		return
+	}
+	err := h.service.SetAllowance(ctx, ctx.GetString(userIDKey), ctx.Param("slug"), ctx.Param("user_id"), body)
+	h.respond(ctx, http.StatusOK, "Spending limit updated", nil, err)
 }
 
 // Offboard handles POST /companies/:slug/members/:user_id/offboard.

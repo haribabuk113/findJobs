@@ -44,6 +44,7 @@ type BulkPlan struct {
 // BulkResult is the plan, plus the new applications when it was submitted.
 type BulkResult struct {
 	BulkPlan
+	WalletPaise  int64         `json:"wallet_paise"` // the balance before this request
 	DryRun       bool          `json:"dry_run"`
 	Applications []Application `json:"applications"`
 }
@@ -92,7 +93,10 @@ func PlanBulk(jobs []BulkJob, freeRemaining int, applyFeePaise int64) BulkPlan {
 }
 
 // Err is why the plan can't be submitted as it is (all or nothing), or nil.
-func (p *BulkPlan) Err() error {
+// Paid applications need confirmPaidCount to equal Paid, so a split that
+// changed since the candidate saw it (another tab used a free one) is never
+// charged unconfirmed.
+func (p *BulkPlan) Err(confirmPaidCount int) error {
 	if len(p.Problems) > 0 {
 		parts := make([]string, len(p.Problems))
 		for i, pr := range p.Problems {
@@ -100,9 +104,9 @@ func (p *BulkPlan) Err() error {
 		}
 		return &ConflictError{Message: "nothing was applied; remove these jobs and try again: " + strings.Join(parts, ", ")}
 	}
-	if p.Paid > 0 {
-		return &PaymentRequiredError{Message: fmt.Sprintf(
-			"nothing was applied; %d of these jobs need paid applications, which arrive with the wallet", p.Paid)}
+	if p.FeePaise > 0 && confirmPaidCount != p.Paid {
+		return &PaymentRequiredError{Reason: ReasonConfirmPaid, FeePaise: p.FeePaise, Message: fmt.Sprintf(
+			"nothing was applied; %d of these jobs need paid applications: confirm with confirm_paid_count %d", p.Paid, p.Paid)}
 	}
 	return nil
 }

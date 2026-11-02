@@ -24,6 +24,15 @@ type Config struct {
 	FXEndpoint string
 	// StorageDir is where the local-disk ObjectStore keeps uploads.
 	StorageDir string
+	Razorpay   RazorpayConfig
+}
+
+// RazorpayConfig is the payment gateway account. All three are set together,
+// or none: without them wallets are readable but top-ups return 503.
+type RazorpayConfig struct {
+	KeyID         string
+	KeySecret     string
+	WebhookSecret string // set per webhook in the Razorpay dashboard
 }
 
 type SessionConfig struct {
@@ -150,6 +159,11 @@ func Load() (*Config, error) {
 		PlatformAdminIDs: getEnvList("PLATFORM_ADMIN_IDS"),
 		FXEndpoint:       l.str("FX_ENDPOINT", "https://open.er-api.com/v6/latest/INR"),
 		StorageDir:       l.str("STORAGE_DIR", "./uploads"),
+		Razorpay: RazorpayConfig{
+			KeyID:         os.Getenv("RAZORPAY_KEY_ID"),
+			KeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
+			WebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
+		},
 		Session: SessionConfig{
 			TokenEncKeys: os.Getenv("TOKEN_ENC_KEYS"),
 			IdleTimeout:  l.duration("SESSION_IDLE_TIMEOUT", 168*time.Hour),
@@ -161,7 +175,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// validatePool checks the DB pool sizes in every environment.
+// validatePool checks the DB pool sizes and the gateway keys in every environment.
 func (c *Config) validatePool() []error {
 	var errs []error
 	if c.Database.MaxConns < 1 {
@@ -169,6 +183,9 @@ func (c *Config) validatePool() []error {
 	}
 	if c.Database.MinConns < 0 || c.Database.MinConns > c.Database.MaxConns {
 		errs = append(errs, fmt.Errorf("DB_MIN_CONNS must be 0 to DB_MAX_CONNS (%d), got %d", c.Database.MaxConns, c.Database.MinConns))
+	}
+	if rp := c.Razorpay; (rp.KeyID == "") != (rp.KeySecret == "") || (rp.KeyID == "") != (rp.WebhookSecret == "") {
+		errs = append(errs, errors.New("set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET together, or none of them"))
 	}
 	return errs
 }

@@ -12,20 +12,25 @@ type ApplicationRepository interface {
 	// Apply records an Easy Apply application in one transaction: the job must
 	// be open and Easy Apply, the candidate needs a saved profile, the match
 	// and dossier are computed from stored data, and one free application is
-	// taken from day's quota (ErrQuotaExhausted when limit is reached).
-	Apply(ctx context.Context, userID, jobID string, day time.Time, limit int) (*applications.Application, error)
+	// taken from day's quota. Past the limit, applyFeePaise is debited from
+	// the candidate's wallet when confirmPaid (PaymentRequiredError otherwise,
+	// or when the balance is short).
+	Apply(ctx context.Context, userID, jobID string, day time.Time, limit int, applyFeePaise int64, confirmPaid bool) (*applications.Application, error)
 	// ApplyBulk applies to several jobs in one transaction, all or nothing:
 	// Easy Apply jobs as in Apply (sharing the day's quota), External ones as
-	// in ApplyExternal, and the applied jobs leave the saved list. With dryRun
-	// it only returns the plan; otherwise it returns the plan's Err when a job
-	// blocks the batch or any application would need paying.
-	ApplyBulk(ctx context.Context, userID string, jobIDs []string, day time.Time, limit int, applyFeePaise int64, dryRun bool) (*applications.BulkResult, error)
+	// in ApplyExternal, and the applied jobs leave the saved list. Easy Apply
+	// jobs past the free allowance are paid from the wallet. With dryRun it
+	// only returns the plan; otherwise it returns the plan's Err when a job
+	// blocks the batch or confirmPaidCount doesn't match the paid count.
+	ApplyBulk(ctx context.Context, userID string, jobIDs []string, day time.Time, limit int, applyFeePaise int64,
+		dryRun bool, confirmPaidCount int) (*applications.BulkResult, error)
 	// ApplyExternal records "Yes, I applied" for an open External job (no quota).
 	ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error)
 	// Mine lists the candidate's applications, newest first.
 	Mine(ctx context.Context, userID string) ([]applications.Application, error)
-	// QuotaUsed is how many free applications the candidate used on day.
-	QuotaUsed(ctx context.Context, userID string, day time.Time) (int, error)
+	// QuotaUsed is how many free applications the candidate used on day, and
+	// their wallet balance.
+	QuotaUsed(ctx context.Context, userID string, day time.Time) (used int, walletPaise int64, err error)
 	// Applicants lists a job's Easy Apply applicants for its recruiter or a
 	// current admin of its company; anyone else gets ErrJobNotFound.
 	Applicants(ctx context.Context, jobID, viewerID string, f applications.ApplicantFilter) ([]applications.Applicant, error)

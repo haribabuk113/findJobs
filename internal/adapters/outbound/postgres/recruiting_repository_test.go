@@ -26,7 +26,7 @@ func testJob(t *testing.T, repo *RecruitingRepository, recruiter string, designa
 	if paid {
 		rec.DBTier = "Premium"
 	}
-	if err := repo.Create(context.Background(), rec); err != nil {
+	if err := repo.Create(context.Background(), rec, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { repo.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, rec.ID) })

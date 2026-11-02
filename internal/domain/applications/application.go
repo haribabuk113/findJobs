@@ -84,15 +84,18 @@ type ApplicantFilter struct {
 	Sort     string // "recent" (default) or "match"
 }
 
-// Quota is today's free Easy Apply allowance.
+// Quota is today's free Easy Apply allowance, plus what a paid application
+// costs and the wallet balance (the header bar).
 type Quota struct {
-	Limit     int `json:"limit"`
-	Used      int `json:"used"`
-	Remaining int `json:"remaining"`
+	Limit         int   `json:"limit"`
+	Used          int   `json:"used"`
+	Remaining     int   `json:"remaining"`
+	ApplyFeePaise int64 `json:"apply_fee_paise"`
+	WalletPaise   int64 `json:"wallet_paise"`
 }
 
-func NewQuota(limit, used int) Quota {
-	return Quota{Limit: limit, Used: used, Remaining: max(0, limit-used)}
+func NewQuota(limit, used int, applyFeePaise, walletPaise int64) Quota {
+	return Quota{Limit: limit, Used: used, Remaining: max(0, limit-used), ApplyFeePaise: applyFeePaise, WalletPaise: walletPaise}
 }
 
 // Normalize validates a filter and fills defaults.
@@ -154,8 +157,20 @@ type ConflictError struct{ Message string }
 
 func (e *ConflictError) Error() string { return e.Message }
 
-// PaymentRequiredError: today's free applications are used up.
-type PaymentRequiredError struct{ Message string }
+// Why an application needs paying (the 402's data.reason).
+const (
+	ReasonConfirmPaid         = "confirm_paid"         // free applications are used; confirm paying the fee
+	ReasonInsufficientBalance = "insufficient_balance" // top up the wallet first
+)
+
+// PaymentRequiredError: the application is past today's free allowance. It
+// is also the 402's data, so the client can show the confirm or top-up modal.
+type PaymentRequiredError struct {
+	Message      string `json:"-"`
+	Reason       string `json:"reason"`
+	FeePaise     int64  `json:"fee_paise"` // what the request would cost in all
+	BalancePaise int64  `json:"balance_paise"`
+}
 
 func (e *PaymentRequiredError) Error() string { return e.Message }
 
@@ -167,7 +182,7 @@ var (
 	ErrOwnJob          = &ValidationError{Field: "job_id", Message: "you can't apply to your own job"}
 	ErrNotEasyApply    = &ValidationError{Field: "job_id", Message: "this job takes applications on the employer's site"}
 	ErrNotExternal     = &ValidationError{Field: "job_id", Message: "this job takes applications here; use Easy Apply"}
-	ErrQuotaExhausted  = &PaymentRequiredError{Message: "you've used today's free applications; paid applications arrive with the wallet"}
+	ErrQuotaChanged    = &ConflictError{Message: "nothing was applied; today's free applications changed meanwhile, so check again"}
 )
 
 func IsValidation(err error) bool      { _, ok := err.(*ValidationError); return ok }

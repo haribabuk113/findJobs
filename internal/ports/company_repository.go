@@ -34,6 +34,8 @@ type CompanyRepository interface {
 	DecideMember(ctx context.Context, slug, adminID, memberID string, approve bool) error
 	// SetMemberRole changes a current member's role, keeping at least one admin (admin only)
 	SetMemberRole(ctx context.Context, slug, adminID, memberID, role string) error
+	// SetAllowance sets a current HR member's company-credit limit (admin only)
+	SetAllowance(ctx context.Context, slug, adminID, memberID string, a companies.Allowance) error
 	// Offboard moves a current member to past, keeping at least one admin (admin only)
 	Offboard(ctx context.Context, slug, adminID, memberID string) error
 	// Leave ends userID's own membership, keeping at least one admin

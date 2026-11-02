@@ -68,6 +68,10 @@ services:
       - SESSION_IDLE_TIMEOUT=${SESSION_IDLE_TIMEOUT:-1h}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - STORAGE_DIR=/app/uploads
+      # Razorpay (test-mode keys in dev). All three or none; without them top-ups return 503.
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
+      - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-}
     depends_on:
       postgres:
         condition: service_healthy

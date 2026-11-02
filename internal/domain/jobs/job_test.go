@@ -27,3 +27,22 @@ func TestNormalize(t *testing.T) {
 		}
 	}
 }
+
+func TestUnlockHash(t *testing.T) {
+	base := SearchCriteria{Query: "go", WorkModes: []string{"Remote", "Hybrid"}, Skills: []int64{3, 1}}
+	paged := base
+	paged.Sort, paged.Page, paged.PageSize, paged.UnlockID = SortMatch, 4, 50, "x"
+	reordered := base
+	reordered.WorkModes, reordered.Skills = []string{"Hybrid", "Remote"}, []int64{1, 3}
+	if base.UnlockHash() != paged.UnlockHash() || base.UnlockHash() != reordered.UnlockHash() {
+		t.Fatal("sort, paging and list order must not change the unlock")
+	}
+	changed := base
+	changed.Query = "golang"
+	if base.UnlockHash() == changed.UnlockHash() {
+		t.Fatal("a filter change must need a new unlock")
+	}
+	if base.WorkModes[0] != "Remote" || base.Skills[0] != 3 {
+		t.Fatalf("hashing reordered the caller's lists: %+v", base)
+	}
+}

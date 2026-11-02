@@ -12,11 +12,13 @@ import (
 
 // ApplicationService applies to jobs and manages applicants.
 type ApplicationService interface {
-	// Apply is Easy Apply, using one of today's free applications.
-	Apply(ctx context.Context, userID, jobID string) (*applications.Application, error)
+	// Apply is Easy Apply, using one of today's free applications, or the
+	// apply fee from the wallet when confirmPaid.
+	Apply(ctx context.Context, userID, jobID string, confirmPaid bool) (*applications.Application, error)
 	// ApplyBulk applies to up to 50 jobs at once, all or nothing; dryRun
-	// returns the free/paid split without applying.
-	ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool) (*applications.BulkResult, error)
+	// returns the free/paid split without applying. A real run with paid
+	// applications needs confirmPaidCount equal to the split's paid count.
+	ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool, confirmPaidCount int) (*applications.BulkResult, error)
 	// ApplyExternal records "Yes, I applied" for an External job.
 	ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error)
 	Mine(ctx context.Context, userID string) ([]applications.Application, error)
@@ -42,23 +44,15 @@ func NewApplicationService(repo ports.ApplicationRepository, settings ports.Sett
 	return &service{repo: repo, settings: settings, now: time.Now}
 }
 
-func (s *service) limit(ctx context.Context) (int, error) {
+func (s *service) Apply(ctx context.Context, userID, jobID string, confirmPaid bool) (*applications.Application, error) {
 	st, err := s.settings.Get(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return st.DailyFreeApplications, nil
-}
-
-func (s *service) Apply(ctx context.Context, userID, jobID string) (*applications.Application, error) {
-	limit, err := s.limit(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.Apply(ctx, userID, jobID, applications.QuotaDay(s.now()), limit)
+	return s.repo.Apply(ctx, userID, jobID, applications.QuotaDay(s.now()), st.DailyFreeApplications, st.ApplyFeePaise, confirmPaid)
 }
 
-func (s *service) ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool) (*applications.BulkResult, error) {
+func (s *service) ApplyBulk(ctx context.Context, userID string, jobIDs []string, dryRun bool, confirmPaidCount int) (*applications.BulkResult, error) {
 	ids, err := applications.NormalizeBulkJobIDs(jobIDs)
 	if err != nil {
 		return nil, err
@@ -67,7 +61,8 @@ func (s *service) ApplyBulk(ctx context.Context, userID string, jobIDs []string,
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.ApplyBulk(ctx, userID, ids, applications.QuotaDay(s.now()), st.DailyFreeApplications, st.ApplyFeePaise, dryRun)
+	return s.repo.ApplyBulk(ctx, userID, ids, applications.QuotaDay(s.now()), st.DailyFreeApplications, st.ApplyFeePaise,
+		dryRun, confirmPaidCount)
 }
 
 func (s *service) ApplyExternal(ctx context.Context, userID, jobID string) (*applications.Application, error) {
@@ -79,12 +74,12 @@ func (s *service) Mine(ctx context.Context, userID string) ([]applications.Appli
 }
 
 func (s *service) Quota(ctx context.Context, userID string) (applications.Quota, error) {
-	limit, err := s.limit(ctx)
+	st, err := s.settings.Get(ctx)
 	if err != nil {
 		return applications.Quota{}, err
 	}
-	used, err := s.repo.QuotaUsed(ctx, userID, applications.QuotaDay(s.now()))
-	return applications.NewQuota(limit, used), err
+	used, wallet, err := s.repo.QuotaUsed(ctx, userID, applications.QuotaDay(s.now()))
+	return applications.NewQuota(st.DailyFreeApplications, used, st.ApplyFeePaise, wallet), err
 }
 
 func (s *service) Applicants(ctx context.Context, jobID, viewerID string, f applications.ApplicantFilter) ([]applications.Applicant, error) {

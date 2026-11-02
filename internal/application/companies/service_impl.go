@@ -120,6 +120,16 @@ func (s *service) SetMemberRole(ctx context.Context, userID, slug, memberID, rol
 	return s.repo.SetMemberRole(ctx, slug, userID, memberID, role)
 }
 
+func (s *service) SetAllowance(ctx context.Context, userID, slug, memberID string, a companies.Allowance) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if uuid.Validate(memberID) != nil {
+		return &companies.NotFoundError{Message: "member not found"}
+	}
+	return s.repo.SetAllowance(ctx, slug, userID, memberID, a)
+}
+
 func (s *service) Offboard(ctx context.Context, userID, slug, memberID string) error {
 	if uuid.Validate(memberID) != nil {
 		return &companies.NotFoundError{Message: "member not found"}

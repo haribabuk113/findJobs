@@ -96,6 +96,9 @@ definitions:
         items:
           $ref: '#/definitions/applications.BulkProblem'
         type: array
+      wallet_paise:
+        description: the balance before this request
+        type: integer
     type: object
   applications.Dossier:
     properties:
@@ -125,13 +128,27 @@ definitions:
           type: string
         type: array
     type: object
+  applications.PaymentRequiredError:
+    properties:
+      balance_paise:
+        type: integer
+      fee_paise:
+        description: what the request would cost in all
+        type: integer
+      reason:
+        type: string
+    type: object
   applications.Quota:
     properties:
+      apply_fee_paise:
+        type: integer
       limit:
         type: integer
       remaining:
         type: integer
       used:
+        type: integer
+      wallet_paise:
         type: integer
     type: object
   applications.SavedJob:
@@ -205,6 +222,14 @@ definitions:
         type: string
       status:
         type: string
+    type: object
+  companies.Allowance:
+    properties:
+      cap_type:
+        description: monthly (IST month) | total
+        type: string
+      limit_paise:
+        type: integer
     type: object
   companies.Benefit:
     properties:
@@ -332,14 +357,23 @@ definitions:
     type: object
   companies.Member:
     properties:
+      cap_type:
+        description: |-
+          Company-credit allowance (HR; admins have no cap). SpentPaise is the
+          current cap period's spending: this IST month for a monthly cap.
+        type: string
       email:
         type: string
+      limit_paise:
+        type: integer
       name:
         type: string
       requested_at:
         type: string
       role:
         type: string
+      spent_paise:
+        type: integer
       started_on:
         type: string
       status:
@@ -415,8 +449,22 @@ definitions:
       tagline:
         type: string
     type: object
+  inbound.applyRequest:
+    properties:
+      confirm_paid:
+        description: |-
+          ConfirmPaid agrees to pay the apply fee from the wallet when today's
+          free applications are used up.
+        type: boolean
+      job_id:
+        type: string
+    type: object
   inbound.bulkApplyRequest:
     properties:
+      confirm_paid_count:
+        description: ConfirmPaidCount must equal the dry run's paid count when it's
+          above 0.
+        type: integer
       dry_run:
         type: boolean
       job_ids:
@@ -485,6 +533,16 @@ definitions:
       status:
         type: string
     type: object
+  inbound.topupRequest:
+    properties:
+      amount_paise:
+        type: integer
+    type: object
+  inbound.unlockRequest:
+    properties:
+      criteria:
+        $ref: '#/definitions/jobs.SearchCriteria'
+    type: object
   jobs.Analytics:
     properties:
       applications:
@@ -536,6 +594,11 @@ definitions:
         type: boolean
       category:
         type: string
+      checkout:
+        allOf:
+        - $ref: '#/definitions/payments.Checkout'
+        description: 'Checkout is set on an out-of-pocket post: open the gateway with
+          it.'
       company:
         $ref: '#/definitions/jobs.CompanyCard'
       company_name:
@@ -607,7 +670,7 @@ definitions:
           type: string
         type: array
       status:
-        description: active | closed | expired
+        description: active | closed | expired | pending_payment
         type: string
       summary:
         type: string
@@ -723,6 +786,15 @@ definitions:
           type: string
         type: array
     type: object
+  jobs.PaymentRequiredError:
+    properties:
+      balance_paise:
+        type: integer
+      fee_paise:
+        type: integer
+      reason:
+        type: string
+    type: object
   jobs.Person:
     properties:
       id:
@@ -820,6 +892,11 @@ definitions:
         items:
           type: string
         type: array
+      credits_allowance_paise:
+        description: |-
+          CreditsAllowancePaise is what the user may still spend from the company
+          wallet: null for admins (no cap, only the balance), 0 for employees.
+        type: integer
       hq_location_id:
         type: string
       name:
@@ -923,6 +1000,9 @@ definitions:
         items:
           type: string
         type: array
+      unlock_id:
+        description: 'sort=match: from POST /jobs/search/unlocks for these filters'
+        type: string
       work_modes:
         items:
           type: string
@@ -939,6 +1019,64 @@ definitions:
       jobs:
         items:
           $ref: '#/definitions/jobs.Job'
+        type: array
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  jobs.Unlock:
+    properties:
+      charged_paise:
+        description: 0 when these filters were already unlocked, or the fee is 0
+        type: integer
+      unlock_id:
+        type: string
+    type: object
+  payments.Checkout:
+    properties:
+      amount_paise:
+        type: integer
+      currency:
+        type: string
+      gateway:
+        description: razorpay
+        type: string
+      key_id:
+        type: string
+      order_id:
+        type: string
+    type: object
+  payments.Entry:
+    properties:
+      actor_name:
+        description: who topped up or spent (matters on company wallets)
+        type: string
+      amount_paise:
+        type: integer
+      balance_after_paise:
+        type: integer
+      created_at:
+        type: string
+      id:
+        type: integer
+      kind:
+        description: topup | apply | job_post | match_unlock | refund
+        type: string
+      ref_id:
+        type: string
+      ref_type:
+        type: string
+    type: object
+  payments.Wallet:
+    properties:
+      balance_paise:
+        type: integer
+      entries:
+        items:
+          $ref: '#/definitions/payments.Entry'
         type: array
       page:
         type: integer
@@ -1652,7 +1790,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/inbound.jobRef'
+          $ref: '#/definitions/inbound.applyRequest'
       produces:
       - application/json
       responses:
@@ -1676,7 +1814,12 @@ paths:
         "402":
           description: Payment Required
           schema:
-            $ref: '#/definitions/adapters.Response'
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.PaymentRequiredError'
+              type: object
         "404":
           description: Not Found
           schema:
@@ -1691,7 +1834,7 @@ paths:
             $ref: '#/definitions/adapters.Response'
       security:
       - sessionCookie: []
-      summary: Easy Apply to a job
+      summary: Easy Apply to a job (free, or paid from the wallet with confirm_paid)
       tags:
       - applications
   /api/v1/applications/bulk:
@@ -1738,7 +1881,12 @@ paths:
         "402":
           description: Payment Required
           schema:
-            $ref: '#/definitions/adapters.Response'
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/applications.PaymentRequiredError'
+              type: object
         "409":
           description: Conflict
           schema:
@@ -2496,6 +2644,60 @@ paths:
       summary: Change a member's role
       tags:
       - companies
+  /api/v1/companies/{slug}/members/{user_id}/allowance:
+    put:
+      consumes:
+      - application/json
+      operationId: setMemberAllowance
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Member user id (a current HR member)
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: monthly or total, and the limit in paise
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/companies.Allowance'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Set an HR member's company-credit spending limit
+      tags:
+      - companies
   /api/v1/companies/{slug}/members/{user_id}/approve:
     post:
       operationId: approveMember
@@ -2626,6 +2828,119 @@ paths:
       summary: Reject a membership request
       tags:
       - companies
+  /api/v1/companies/{slug}/wallet:
+    get:
+      operationId: getCompanyWallet
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 50)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/payments.Wallet'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: 'Company wallet: balance and transactions, newest first'
+      tags:
+      - wallet
+  /api/v1/companies/{slug}/wallet/topups:
+    post:
+      consumes:
+      - application/json
+      operationId: topupCompanyWallet
+      parameters:
+      - description: Company slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      - description: Amount in paise (100 to 50000000)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.topupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/payments.Checkout'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Start a company wallet top-up (returns the checkout order; credited
+        by the webhook)
+      tags:
+      - wallet
   /api/v1/companies/search:
     post:
       consumes:
@@ -2821,11 +3136,70 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/adapters.Response'
+        "402":
+          description: Payment Required
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.PaymentRequiredError'
+              type: object
         "500":
           description: Internal Server Error
           schema:
             $ref: '#/definitions/adapters.Response'
       summary: Search public job listings (session optional)
+      tags:
+      - jobs
+  /api/v1/jobs/search/unlocks:
+    post:
+      consumes:
+      - application/json
+      operationId: unlockMatchSort
+      parameters:
+      - description: The filters to unlock (sort and page are ignored)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.unlockRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Unlock'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "402":
+          description: Payment Required
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.PaymentRequiredError'
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Unlock match-score sorting for a set of filters (charged from the wallet)
       tags:
       - jobs
   /api/v1/jobs/share/{hash}:
@@ -2860,6 +3234,40 @@ paths:
       summary: Job page by share link (session optional)
       tags:
       - jobs
+  /api/v1/payments/webhook:
+    post:
+      consumes:
+      - application/json
+      operationId: paymentWebhook
+      parameters:
+      - description: HMAC-SHA256 of the raw body
+        in: header
+        name: X-Razorpay-Signature
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      summary: Payment gateway webhook (Razorpay order.paid; X-Razorpay-Signature
+        required)
+      tags:
+      - wallet
   /api/v1/profile/me:
     get:
       operationId: getMyProfile
@@ -3638,6 +4046,52 @@ paths:
       summary: Applicants for a job
       tags:
       - applications
+  /api/v1/recruiter/jobs/{id}/checkout:
+    post:
+      operationId: checkoutJob
+      parameters:
+      - description: Job id
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/jobs.Detail'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Start a new payment for a job awaiting payment
+      tags:
+      - recruiting
   /api/v1/recruiter/jobs/{id}/close:
     post:
       operationId: closeJob
@@ -3957,6 +4411,93 @@ paths:
       summary: Public limits and prices
       tags:
       - settings
+  /api/v1/wallet:
+    get:
+      operationId: getMyWallet
+      parameters:
+      - description: Page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (default 20, max 50)
+        in: query
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/payments.Wallet'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: 'My wallet: balance and ledger, newest first'
+      tags:
+      - wallet
+  /api/v1/wallet/topups:
+    post:
+      consumes:
+      - application/json
+      operationId: topupMyWallet
+      parameters:
+      - description: Amount in paise (100 to 50000000)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.topupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/payments.Checkout'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Start a personal wallet top-up (returns the checkout order; credited
+        by the webhook)
+      tags:
+      - wallet
   /healthz:
     get:
       operationId: liveness

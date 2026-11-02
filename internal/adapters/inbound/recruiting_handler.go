@@ -7,6 +7,7 @@ import (
 	"findJobs/internal/adapters"
 	appjobs "findJobs/internal/application/jobs"
 	domainjobs "findJobs/internal/domain/jobs"
+	domainpayments "findJobs/internal/domain/payments"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,6 +31,7 @@ func RegisterRecruitingRoutes(api *gin.RouterGroup, h *RecruitingHandler, option
 	r.PUT("/jobs/:id", h.Edit)
 	r.POST("/jobs/:id/close", h.Close)
 	r.POST("/jobs/:id/repost", h.Repost)
+	r.POST("/jobs/:id/checkout", h.Checkout)
 	r.GET("/drafts", h.Drafts)
 	r.POST("/drafts", h.SaveDraft)
 	r.PUT("/drafts/:id", h.OverwriteDraft)
@@ -85,8 +87,28 @@ func (h *RecruitingHandler) Post(ctx *gin.Context) {
 		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid job post"))
 		return
 	}
-	result, err := h.service.Post(ctx, ctx.GetString(userIDKey), &in)
-	h.respond(ctx, http.StatusCreated, "Job published successfully", result, err)
+	result, err := h.service.Post(ctx, ctx.GetString(userIDKey), ctx.GetHeader("Idempotency-Key"), &in)
+	message := "Job published successfully"
+	if result != nil && result.Status == domainjobs.StatePending {
+		message = "Job saved; it publishes once the payment completes"
+	}
+	h.respond(ctx, http.StatusCreated, message, result, err)
+}
+
+// Checkout handles POST /recruiter/jobs/:id/checkout: pay for a pending job again.
+//
+//	@Summary	Start a new payment for a job awaiting payment
+//	@ID			checkoutJob
+//	@Tags		recruiting
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		id	path	string	true	"Job id"
+//	@Success	200	{object}	adapters.Response{data=domainjobs.Detail}
+//	@Failure	401,404,409,500,503	{object}	adapters.Response
+//	@Router		/api/v1/recruiter/jobs/{id}/checkout [post]
+func (h *RecruitingHandler) Checkout(ctx *gin.Context) {
+	result, err := h.service.Checkout(ctx, ctx.GetString(userIDKey), ctx.Param("id"))
+	h.respond(ctx, http.StatusOK, "Checkout started", result, err)
 }
 
 // Edit handles PUT /recruiter/jobs/:id (tier, company and payment can't change).
@@ -299,7 +321,12 @@ func (h *RecruitingHandler) respond(ctx *gin.Context, status int, message string
 		case domainjobs.IsForbidden(err):
 			h.fail(ctx, http.StatusForbidden, err)
 		case domainjobs.IsPaymentRequired(err):
-			h.fail(ctx, http.StatusPaymentRequired, err)
+			// The error is also the data: reason, fee and what's available.
+			ctx.JSON(http.StatusPaymentRequired, adapters.BuildErrorResponse("402 Payment Required", err, err))
+		case domainjobs.IsConflict(err):
+			h.fail(ctx, http.StatusConflict, err)
+		case domainpayments.IsUnavailable(err):
+			h.fail(ctx, http.StatusServiceUnavailable, err)
 		default:
 			ctx.Error(err)
 			h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))

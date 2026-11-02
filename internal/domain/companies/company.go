@@ -144,6 +144,31 @@ type Member struct {
 	Title       string    `json:"title"`
 	StartedOn   *string   `json:"started_on"`
 	RequestedAt time.Time `json:"requested_at"`
+	// Company-credit allowance (HR; admins have no cap). SpentPaise is the
+	// current cap period's spending: this IST month for a monthly cap.
+	CapType    string `json:"cap_type"`
+	LimitPaise int64  `json:"limit_paise"`
+	SpentPaise int64  `json:"spent_paise"`
+}
+
+// Allowance caps an HR member's spending of company credits.
+type Allowance struct {
+	CapType    string `json:"cap_type"` // monthly (IST month) | total
+	LimitPaise int64  `json:"limit_paise"`
+}
+
+// MaxAllowancePaise caps one limit at ₹1,00,00,000.
+const MaxAllowancePaise = 1_000_000_000
+
+// Validate checks an allowance an admin submitted.
+func (a *Allowance) Validate() error {
+	if a.CapType != "monthly" && a.CapType != "total" {
+		return &ValidationError{Field: "cap_type", Message: "cap_type must be monthly or total"}
+	}
+	if a.LimitPaise < 0 || a.LimitPaise > MaxAllowancePaise {
+		return &ValidationError{Field: "limit_paise", Message: "limit_paise must be 0 to 1000000000"}
+	}
+	return nil
 }
 
 // Dashboard holds the non-money admin widgets (manual "Company dashboard").

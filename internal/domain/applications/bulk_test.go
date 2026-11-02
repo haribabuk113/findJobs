@@ -34,15 +34,23 @@ func TestPlanBulk(t *testing.T) {
 		p.Free != 2 || p.Paid != 1 || p.FeePaise != 500 || len(p.Problems) != 0 {
 		t.Fatalf("split: %+v", p)
 	}
-	if err := p.Err(); !IsPaymentRequired(err) {
-		t.Fatalf("a paid application blocks the batch until the wallet exists: %v", err)
+	for _, confirmed := range []int{0, 2} {
+		if err := p.Err(confirmed); !IsPaymentRequired(err) || err.(*PaymentRequiredError).Reason != ReasonConfirmPaid {
+			t.Fatalf("confirm_paid_count %d: a paid application needs the exact count confirmed: %v", confirmed, err)
+		}
+	}
+	if err := p.Err(1); err != nil {
+		t.Fatalf("confirmed: %v", err)
+	}
+	if free := PlanBulk(jobs, 2, 0); free.Paid != 1 || free.Err(0) != nil {
+		t.Fatalf("an apply fee of 0 needs no confirmation: %+v %v", free, free.Err(0))
 	}
 	if p := PlanBulk(jobs, -3, 500); p.Free != 0 || p.Paid != 3 {
 		t.Fatalf("over-used quota counts as zero: %+v", p)
 	}
 	// External jobs never use the quota.
-	if p := PlanBulk(jobs[1:2], 0, 500); p.Paid != 0 || p.Err() != nil {
-		t.Fatalf("external only: %+v %v", p, p.Err())
+	if p := PlanBulk(jobs[1:2], 0, 500); p.Paid != 0 || p.Err(0) != nil {
+		t.Fatalf("external only: %+v %v", p, p.Err(0))
 	}
 
 	blocked := PlanBulk([]BulkJob{
@@ -55,7 +63,7 @@ func TestPlanBulk(t *testing.T) {
 	if !slices.Equal(blocked.Problems, want) || !slices.Equal(blocked.EasyApply, []string{"ok"}) {
 		t.Fatalf("problems: %+v", blocked)
 	}
-	err := blocked.Err()
+	err := blocked.Err(0)
 	if !IsConflict(err) || !strings.Contains(err.Error(), "gone (not open)") {
 		t.Fatalf("problems block the batch and name the jobs: %v", err)
 	}

@@ -11,9 +11,16 @@ import (
 	"github.com/google/uuid"
 
 	"findJobs/internal/domain/jobs"
+	"findJobs/internal/domain/payments"
 	"findJobs/internal/domain/reference"
 	"findJobs/internal/ports"
 )
+
+// JobPostPayer collects out-of-pocket job post fees through the gateway (the payment service).
+type JobPostPayer interface {
+	Configured() bool
+	JobPostCheckout(ctx context.Context, userID, jobID string, amountPaise int64) (*payments.Checkout, error)
+}
 
 // TermResolver turns typed names into taxonomy ids (the reference service).
 type TermResolver interface {
@@ -23,7 +30,13 @@ type TermResolver interface {
 // RecruitingService defines the inbound port for posting and managing jobs.
 type RecruitingService interface {
 	PosterCompanies(ctx context.Context, userID string) ([]jobs.PosterCompany, error)
-	Post(ctx context.Context, userID string, in *jobs.PostInput) (*jobs.Detail, error)
+	// Post publishes a job. A paid post with a fee needs idempotencyKey (the
+	// request's Idempotency-Key): a retry with the same key returns the first
+	// job. Company credits are charged at once; out of pocket returns the job
+	// pending with a Checkout, and the payment webhook publishes it.
+	Post(ctx context.Context, userID, idempotencyKey string, in *jobs.PostInput) (*jobs.Detail, error)
+	// Checkout starts a new payment for the user's pending job (e.g. after an abandoned checkout).
+	Checkout(ctx context.Context, userID, id string) (*jobs.Detail, error)
 	Edit(ctx context.Context, userID, id string, in *jobs.PostInput) (*jobs.Detail, error)
 	Close(ctx context.Context, userID, id string) error
 	Repost(ctx context.Context, userID, id string) error
@@ -44,14 +57,19 @@ type recruiting struct {
 	repo     ports.RecruitingRepository
 	terms    TermResolver
 	settings ports.SettingsRepository
+	payer    JobPostPayer
 }
 
 // NewRecruitingService creates the recruiting service using dependency injection.
-func NewRecruitingService(repo ports.RecruitingRepository, terms TermResolver, settings ports.SettingsRepository) RecruitingService {
-	return &recruiting{repo: repo, terms: terms, settings: settings}
+func NewRecruitingService(repo ports.RecruitingRepository, terms TermResolver, settings ports.SettingsRepository,
+	payer JobPostPayer) RecruitingService {
+	return &recruiting{repo: repo, terms: terms, settings: settings, payer: payer}
 }
 
 var shareHash = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// idempotencyKey is a client-generated key, e.g. a uuid.
+var idempotencyKey = regexp.MustCompile(`^[A-Za-z0-9_-]{8,100}$`)
 
 const maxDraftBytes = 64 << 10
 
@@ -63,19 +81,37 @@ func (s *recruiting) PosterCompanies(ctx context.Context, userID string) ([]jobs
 	return list, err
 }
 
-func (s *recruiting) Post(ctx context.Context, userID string, in *jobs.PostInput) (*jobs.Detail, error) {
+func (s *recruiting) Post(ctx context.Context, userID, key string, in *jobs.PostInput) (*jobs.Detail, error) {
 	if err := in.Normalize(); err != nil {
 		return nil, err
 	}
+	if key != "" && !idempotencyKey.MatchString(key) {
+		return nil, &jobs.ValidationError{Field: "Idempotency-Key", Message: "Idempotency-Key must be 8 to 100 letters, digits, - or _"}
+	}
+	var charge *jobs.Charge
 	if in.Tier == jobs.TierPaid {
 		settings, err := s.settings.Get(ctx)
 		if err != nil {
 			return nil, err
 		}
-		// ponytail: until payments exist, paid posts are free while the admin
-		// fee is ₹0; any fee returns 402 here.
+		// A fee of 0 (D5: the admin sets it) publishes paid posts free.
 		if settings.JobPostFeePaise > 0 {
-			return nil, &jobs.PaymentRequiredError{Message: "paid job posts need payment, which isn't available yet"}
+			if key == "" {
+				return nil, &jobs.ValidationError{Field: "Idempotency-Key", Message: "a paid post needs an Idempotency-Key header"}
+			}
+			if in.PaymentMethod == jobs.PayOutOfPocket && !s.payer.Configured() {
+				return nil, payments.ErrNotConfigured
+			}
+			charge = &jobs.Charge{Method: in.PaymentMethod, FeePaise: settings.JobPostFeePaise}
+		}
+	}
+	if key != "" {
+		// A retry of a post that went through: return that job, charge nothing.
+		if id, err := s.repo.PostByKey(ctx, userID, key); err != nil || id != "" {
+			if err != nil {
+				return nil, err
+			}
+			return s.repo.Detail(ctx, id, false, userID)
 		}
 	}
 	rec, err := s.record(ctx, userID, in)
@@ -84,10 +120,48 @@ func (s *recruiting) Post(ctx context.Context, userID string, in *jobs.PostInput
 	}
 	rec.ID = uuid.NewString()
 	rec.ShareHash = randomHash()
-	if err := s.repo.Create(ctx, rec); err != nil {
+	rec.IdempotencyKey = key
+	if err := s.repo.Create(ctx, rec, charge); err != nil {
 		return nil, err
 	}
-	return s.repo.Detail(ctx, rec.ID, false, userID)
+	d, err := s.repo.Detail(ctx, rec.ID, false, userID)
+	if err != nil || charge == nil || charge.Method != jobs.PayOutOfPocket {
+		return d, err
+	}
+	// If this fails the job stays pending; Checkout retries the payment.
+	d.Checkout, err = s.payer.JobPostCheckout(ctx, userID, rec.ID, charge.FeePaise)
+	return d, err
+}
+
+func (s *recruiting) Checkout(ctx context.Context, userID, id string) (*jobs.Detail, error) {
+	if uuid.Validate(id) != nil {
+		return nil, jobs.ErrJobNotFound
+	}
+	pending, err := s.repo.Pending(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !pending {
+		return nil, jobs.ErrAlreadyPaid
+	}
+	settings, err := s.settings.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var checkout *payments.Checkout
+	if settings.JobPostFeePaise == 0 {
+		// Posting became free while this job waited: publish it.
+		if err := s.repo.PublishPending(ctx, id, userID); err != nil {
+			return nil, err
+		}
+	} else if checkout, err = s.payer.JobPostCheckout(ctx, userID, id, settings.JobPostFeePaise); err != nil {
+		return nil, err
+	}
+	d, err := s.repo.Detail(ctx, id, false, userID)
+	if d != nil {
+		d.Checkout = checkout
+	}
+	return d, err
 }
 
 func (s *recruiting) Edit(ctx context.Context, userID, id string, in *jobs.PostInput) (*jobs.Detail, error) {
@@ -177,7 +251,7 @@ func (s *recruiting) Repost(ctx context.Context, userID, id string) error {
 
 func (s *recruiting) Mine(ctx context.Context, userID, state string) ([]jobs.Posted, error) {
 	switch state {
-	case "", jobs.StateActive, jobs.StateClosed, jobs.StateExpired:
+	case "", jobs.StateActive, jobs.StateClosed, jobs.StateExpired, jobs.StatePending:
 	default:
 		return nil, &jobs.ValidationError{Field: "status", Message: "status must be active, closed or expired"}
 	}

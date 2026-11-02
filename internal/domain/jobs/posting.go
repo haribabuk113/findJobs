@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"findJobs/internal/domain/payments"
 )
 
 // Tiers as posted (manual "Post a job"): free jobs are unlisted (share link
@@ -203,12 +205,15 @@ const (
 	StateActive  = "active"
 	StateClosed  = "closed"
 	StateExpired = "expired"
+	// StatePending: an out-of-pocket post waiting for its payment. Hidden and
+	// closed to applications until the gateway's webhook publishes it.
+	StatePending = "pending_payment"
 )
 
 // Detail is the job details page.
 type Detail struct {
 	Job
-	Status          string       `json:"status"` // active | closed | expired
+	Status          string       `json:"status"` // active | closed | expired | pending_payment
 	Description     string       `json:"description"`
 	InterviewStages []string     `json:"interview_stages"`
 	ExternalURL     string       `json:"external_url,omitempty"`
@@ -221,6 +226,8 @@ type Detail struct {
 	// Recruiter/admin only (manual "Job Analytics Engine").
 	ShareHash string     `json:"share_hash,omitempty"`
 	Analytics *Analytics `json:"analytics,omitempty"`
+	// Checkout is set on an out-of-pocket post: open the gateway with it.
+	Checkout *payments.Checkout `json:"checkout,omitempty"`
 }
 
 // Person is a public name card.
@@ -278,6 +285,9 @@ type PosterCompany struct {
 	Role              string   `json:"role"`
 	HQLocationID      *string  `json:"hq_location_id"`
 	BranchLocationIDs []string `json:"branch_location_ids"`
+	// CreditsAllowancePaise is what the user may still spend from the company
+	// wallet: null for admins (no cap, only the balance), 0 for employees.
+	CreditsAllowancePaise *int64 `json:"credits_allowance_paise"`
 }
 
 // NotFoundError: no such job (or not visible to this viewer).
@@ -290,10 +300,32 @@ type ForbiddenError struct{ Message string }
 
 func (e *ForbiddenError) Error() string { return e.Message }
 
-// PaymentRequiredError: a paid post with a fee while payments aren't connected.
-type PaymentRequiredError struct{ Message string }
+// Why a paid post can't be paid (the 402's data.reason).
+const (
+	ReasonInsufficientBalance = "insufficient_balance" // the company wallet is short: an admin tops it up
+	ReasonAllowanceExceeded   = "allowance_exceeded"   // the HR member's spending limit is used up
+	ReasonUnlockRequired      = "unlock_required"      // sort=match without an unlock for these filters
+)
+
+// PaymentRequiredError: a company-credits post that can't be paid. It is
+// also the 402's data. BalancePaise is what's available: the wallet balance,
+// or the remaining allowance for allowance_exceeded.
+type PaymentRequiredError struct {
+	Message      string `json:"-"`
+	Reason       string `json:"reason"`
+	FeePaise     int64  `json:"fee_paise"`
+	BalancePaise int64  `json:"balance_paise"`
+}
 
 func (e *PaymentRequiredError) Error() string { return e.Message }
+
+// ConflictError: the job's state doesn't allow this (e.g. it awaits payment).
+type ConflictError struct{ Message string }
+
+func (e *ConflictError) Error() string { return e.Message }
+
+// IsConflict checks if an error is a ConflictError
+func IsConflict(err error) bool { _, ok := err.(*ConflictError); return ok }
 
 // IsNotFound checks if an error is a NotFoundError
 func IsNotFound(err error) bool { _, ok := err.(*NotFoundError); return ok }
@@ -307,6 +339,18 @@ func IsPaymentRequired(err error) bool { _, ok := err.(*PaymentRequiredError); r
 // ErrJobNotFound is the common not-found case.
 var ErrJobNotFound = &NotFoundError{Message: "job not found"}
 
+var (
+	ErrAwaitingPayment = &ConflictError{Message: "this job is waiting for its payment; pay to publish it"}
+	ErrAlreadyPaid     = &ConflictError{Message: "this job is already published"}
+	ErrPostInProgress  = &ConflictError{Message: "this job is already being posted; reload your jobs"}
+)
+
+// Charge is how a paid post with a fee is paid.
+type Charge struct {
+	Method   string // PayCompanyCredits | PayOutOfPocket
+	FeePaise int64
+}
+
 // Record is a validated post ready to store: the form plus resolved term ids,
 // identity and tier-derived flags.
 type Record struct {
@@ -319,4 +363,7 @@ type Record struct {
 	SkillIDs      []int64
 	DBTier        string // Free | Premium (search filters on it)
 	Listed        bool   // in public search: paid jobs only
+	// IdempotencyKey (the request's Idempotency-Key) identifies the post, so
+	// a retry returns the first job instead of posting and charging again.
+	IdempotencyKey string
 }

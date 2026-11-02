@@ -11,6 +11,7 @@ import (
 	"findJobs/internal/adapters/outbound/fx"
 	"findJobs/internal/adapters/outbound/iam"
 	"findJobs/internal/adapters/outbound/postgres"
+	"findJobs/internal/adapters/outbound/razorpay"
 	redisstore "findJobs/internal/adapters/outbound/redis"
 	"findJobs/internal/adapters/outbound/storage"
 	appauth "findJobs/internal/application/auth"
@@ -18,6 +19,7 @@ import (
 	appjobs "findJobs/internal/application/jobs"
 	appprofiles "findJobs/internal/application/profiles"
 	appapplications "findJobs/internal/application/applications"
+	apppayments "findJobs/internal/application/payments"
 	appreference "findJobs/internal/application/reference"
 	appsettings "findJobs/internal/application/settings"
 	"findJobs/internal/pkg/background"
@@ -25,6 +27,7 @@ import (
 	"findJobs/internal/pkg/logger"
 	"findJobs/internal/pkg/scheduler"
 	"findJobs/internal/pkg/tokencrypt"
+	"findJobs/internal/ports"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -85,8 +88,8 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
 
 	// Job routes
-	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db)))
-	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser())
+	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db), postgres.NewSettingsRepository(db)))
+	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Platform admin routes
 	settingsHandler := inbound.NewSettingsHandler(appsettings.NewSettingsService(postgres.NewSettingsRepository(db)))
@@ -98,9 +101,17 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	inbound.RegisterReferenceRoutes(api.Group("/assets"), api.Group("/admin"), inbound.NewReferenceHandler(referenceService), authHandler.RequirePlatformAdmin())
 	bg.Go(func(ctx context.Context) { startReferenceData(ctx, referenceService) })
 
-	// Recruiting: posting and managing jobs, job pages, recruiter cards
+	// Wallets and top-ups. Without Razorpay keys, wallets read as usual and top-ups return 503.
+	var gateway ports.PaymentGateway
+	if cfg.Razorpay.KeyID != "" {
+		gateway = razorpay.New(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	}
+	paymentService := apppayments.NewPaymentService(postgres.NewWalletRepository(db), gateway)
+	inbound.RegisterPaymentRoutes(api, inbound.NewPaymentsHandler(paymentService), authHandler.RequireUser())
+
+	// Recruiting: posting and managing jobs (paid posts charge through payments), job pages, recruiter cards
 	recruitingService := appjobs.NewRecruitingService(postgres.NewRecruitingRepository(db), referenceService,
-		postgres.NewSettingsRepository(db))
+		postgres.NewSettingsRepository(db), paymentService)
 	inbound.RegisterRecruitingRoutes(api, inbound.NewRecruitingHandler(recruitingService), authHandler.OptionalUser(), authHandler.RequireUser())
 
 	// Companies (uploads: local disk until the Internxt S3 adapter is configured)
