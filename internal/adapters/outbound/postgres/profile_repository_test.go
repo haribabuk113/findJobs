@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"findJobs/internal/domain/companies"
 	"findJobs/internal/domain/profiles"
 	"findJobs/internal/domain/reference"
 	"findJobs/internal/ports"
@@ -16,7 +17,10 @@ func testProfile(slug string) *profiles.Profile {
 	p := &profiles.Profile{
 		Slug: slug, Name: "Asha Rao", Title: "Designer", About: "Hello", Email: "asha@example.com",
 		SalaryCurrency: "INR", ExpectedSalary: 100, PreferredLocations: []string{"1277333"},
-		Visible: true, ContactPrivate: true, SalaryPrivate: true,
+		Visible: true, ContactVisibility: "applied", ExpectedSalaryVisibility: "applied", CurrentSalaryVisibility: "applied",
+		HourlyRateVisibility: "all", ResumeVisibility: "applied", CurrentSalaryPeriod: "year", ExpectedSalaryPeriod: "month",
+		Availability: profiles.ServingNotice, LastWorkingDate: "2026-12-01", NoticeValue: 2, NoticeUnit: "months",
+		Notice: "60 days", Travel: "Occasional travel",
 		Experiences: []profiles.Experience{{Company: "Test Co " + slug, Title: "Designer", Type: "Full-time", Start: "2023-03", Current: true},
 			{Company: "Unknown Ltd", Title: "Intern", Type: "Internship", Start: "2020-01", End: "2020-06"}},
 		Details: profiles.Details{Languages: []profiles.Language{{Name: "English", Proficiency: "Fluent"}}},
@@ -74,6 +78,31 @@ func TestProfileLifecycle(t *testing.T) {
 	if !got.Saved || got.AboutUpdated == nil || len(got.SkillGroups) != 2 || len(got.Skills) != 3 || got.TargetRoles[0] != roles[0].Name {
 		t.Fatalf("round trip: %+v", got)
 	}
+	if got.HourlyRateVisibility != "all" || got.CurrentSalaryVisibility != "applied" || got.ExpectedSalaryPeriod != "month" ||
+		!got.IsServingNotice || got.LastWorkingDate != "2026-12-01" || got.NoticeValue != 2 || got.NoticeUnit != "months" ||
+		got.Travel != "Occasional travel" || got.AvailableFrom != "" {
+		t.Fatalf("privacy/availability round trip: %+v", got)
+	}
+	// Expected salary is kept on a yearly INR baseline: 100 INR a month is 1200 a year.
+	var inr float64
+	if err := pool.QueryRow(ctx, `SELECT expected_salary_inr::float8 FROM profiles WHERE user_id = $1`, user).Scan(&inr); err != nil || inr != 1200 {
+		t.Fatalf("expected_salary_inr = %v, %v", inr, err)
+	}
+	// The daily FX refresh re-normalises it the same way (same rates back in).
+	ratesRepo := NewRatesRepository(pool)
+	rates, err := ratesRepo.All(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE profiles SET expected_salary_inr = 0 WHERE user_id = $1`, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := ratesRepo.Replace(ctx, rates); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT expected_salary_inr::float8 FROM profiles WHERE user_id = $1`, user).Scan(&inr); err != nil || inr != 1200 {
+		t.Fatalf("after FX refresh expected_salary_inr = %v, %v", inr, err)
+	}
 	// One-click chips: add appends to the last group (no-op when present),
 	// remove drops it; no profile means ErrNoProfile.
 	if err := repo.RemoveSkill(ctx, user, skills[2].ID); err != nil {
@@ -105,22 +134,79 @@ func TestProfileLifecycle(t *testing.T) {
 	}
 
 	// Verification comes from the company's membership decision.
-	companyID, title, start, err := repo.Experience(ctx, user, 0)
-	if err != nil || companyID != company.ID || title != "Designer" || start != "2023-03" {
-		t.Fatalf("experience 0: %q %q %q %v", companyID, title, start, err)
+	x, err := repo.Experience(ctx, user, 0)
+	if err != nil || x.CompanyID != company.ID || x.Title != "Designer" || x.Start != "2023-03" || x.Review != profiles.ReviewUnverified {
+		t.Fatalf("experience 0: %+v %v", x, err)
 	}
-	if id, _, _, err := repo.Experience(ctx, user, 1); err != nil || id != "" {
-		t.Fatalf("unregistered company: %q %v", id, err)
+	if x, err := repo.Experience(ctx, user, 1); err != nil || x.CompanyID != "" {
+		t.Fatalf("unregistered company: %+v %v", x, err)
 	}
-	if _, _, _, err := repo.Experience(ctx, user, 7); !profiles.IsNotFound(err) {
+	if _, err := repo.Experience(ctx, user, 7); !profiles.IsNotFound(err) {
 		t.Fatalf("missing experience: %v", err)
 	}
+	crepo := NewCompanyRepository(pool)
 	started := time.Date(2023, 3, 1, 0, 0, 0, 0, time.UTC)
-	if err := NewCompanyRepository(pool).RequestMembership(ctx, company.ID, user, title, &started); err != nil {
+	if err := crepo.RequestMembership(ctx, company.ID, user, x.Title, &started); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkPending(ctx, user, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ = repo.Get(ctx, user); got.Experiences[0].Verification != profiles.Pending {
 		t.Fatalf("pending after request: %s", got.Experiences[0].Verification)
+	}
+
+	// Blue tick per entry: approval verifies it and saving it unchanged keeps
+	// the tick; editing it sends it back to the company's queue while the
+	// person stays a current member; a rejected re-review keeps the membership.
+	verification := func() string {
+		g, err := repo.Get(ctx, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.Experiences[0].Verification
+	}
+	inQueue := func() bool {
+		pending, err := crepo.Members(ctx, slug, other, "pending")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(pending) == 1 && pending[0].UserID == user
+	}
+	if err := crepo.DecideMember(ctx, slug, other, user, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if v := verification(); v != profiles.Verified || inQueue() {
+		t.Fatalf("after approval and an unchanged save: %s, queued %v", v, inQueue())
+	}
+	p.Experiences[0].Description = "Led the design system"
+	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if v := verification(); v != profiles.Pending || !inQueue() {
+		t.Fatalf("edited verified entry: %s, queued %v", v, inQueue())
+	}
+	if d, err := crepo.Dashboard(ctx, slug, other); err != nil || d.PendingRequests != 1 {
+		t.Fatalf("dashboard pending: %+v %v", d, err)
+	}
+	if err := crepo.DecideMember(ctx, slug, other, user, true); err != nil || verification() != profiles.Verified {
+		t.Fatalf("re-approval: %v %s", err, verification())
+	}
+	p.Experiences[0].Title = "Design Lead"
+	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := crepo.DecideMember(ctx, slug, other, user, false); err != nil || verification() != profiles.Rejected {
+		t.Fatalf("rejected re-review: %v %s", err, verification())
+	}
+	if current, err := crepo.Members(ctx, slug, other, "current"); err != nil || len(current) != 2 {
+		t.Fatalf("membership kept after a rejected re-review: %d %v", len(current), err)
+	}
+	if err := crepo.DecideMember(ctx, slug, other, user, true); !companies.IsNotFound(err) {
+		t.Fatalf("nothing left to decide: %v", err)
 	}
 
 	// Same about text keeps its timestamp.

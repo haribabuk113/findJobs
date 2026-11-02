@@ -156,9 +156,8 @@ func (r *TaxonomyRepository) Merge(ctx context.Context, kind reference.Kind, sou
 	if _, err := tx.Exec(ctx, `UPDATE `+t+` SET status = 'verified', updated_at = NOW() WHERE id = $1`, masterID); err != nil {
 		return err
 	}
-	// Repoint jobs to the master in the same transaction. Skills keep their
-	// order, without duplicates. (Profiles: the profile module adds its own
-	// repoint here once it stores these ids.)
+	// Repoint jobs and profiles to the master in the same transaction. Skills
+	// keep their order, without duplicates.
 	if err := repointJobs(ctx, tx, kind, sourceIDs, &masterID); err != nil {
 		return err
 	}

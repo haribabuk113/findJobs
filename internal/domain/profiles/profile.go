@@ -38,15 +38,25 @@ type Profile struct {
 	Email    string `json:"email"`
 	Phone    string `json:"phone"`
 
-	ExperienceYears int    `json:"experience_years"`
-	Notice          string `json:"notice"`
+	ExperienceYears int `json:"experience_years"`
+	// Notice is the job-filter bucket ("30 days"). When NoticeUnit is set it
+	// is derived from NoticeValue + NoticeUnit (e.g. 2 + "months").
+	Notice        string `json:"notice"`
+	NoticeValue   int    `json:"notice_value"`
+	NoticeUnit    string `json:"notice_unit"` // days, weeks, months or ""
+	Availability  string `json:"availability"`
+	AvailableFrom string `json:"available_from"` // YYYY-MM-DD, with "Available from date"
+	// IsServingNotice mirrors Availability == "Serving notice"; older clients
+	// that send only this flag still set that availability.
 	IsServingNotice bool   `json:"is_serving_notice"`
-	LastWorkingDate string `json:"last_working_date"` // YYYY-MM-DD or ""
+	LastWorkingDate string `json:"last_working_date"` // YYYY-MM-DD, with "Serving notice"
 
-	SalaryCurrency string  `json:"salary_currency"`
-	CurrentSalary  float64 `json:"current_salary"`
-	ExpectedSalary float64 `json:"expected_salary"`
-	HourlyRate     float64 `json:"hourly_rate"`
+	SalaryCurrency       string  `json:"salary_currency"`
+	CurrentSalary        float64 `json:"current_salary"`
+	CurrentSalaryPeriod  string  `json:"current_salary_period"` // year, month or hour
+	ExpectedSalary       float64 `json:"expected_salary"`
+	ExpectedSalaryPeriod string  `json:"expected_salary_period"`
+	HourlyRate           float64 `json:"hourly_rate"`
 
 	WorkTypes          []string `json:"work_types"`
 	PreferredLocations []string `json:"preferred_locations"`
@@ -54,14 +64,18 @@ type Profile struct {
 	OpenToRemote       bool     `json:"open_to_remote"`
 	WorkMode           string   `json:"work_mode"`
 	Relocation         string   `json:"relocation"`
+	Travel             string   `json:"travel"`
 
-	Visible              bool `json:"visible"`
-	Open                 bool `json:"open"`
-	CurrentSalaryPrivate bool `json:"current_salary_private"`
-	HourlyPrivate        bool `json:"hourly_private"`
-	ContactPrivate       bool `json:"contact_private"`
-	SalaryPrivate        bool `json:"salary_private"`
-	ResumePrivate        bool `json:"resume_private"`
+	Visible bool `json:"visible"`
+	Open    bool `json:"open"`
+	// Privacy (newer doc §12): VisibleAll, VisibleApplied ("Applied Jobs
+	// Only": recruiters of jobs the candidate applied to) or, for the current
+	// salary only, VisibleHidden.
+	CurrentSalaryVisibility  string `json:"current_salary_visibility"`
+	ExpectedSalaryVisibility string `json:"expected_salary_visibility"`
+	HourlyRateVisibility     string `json:"hourly_rate_visibility"`
+	ResumeVisibility         string `json:"resume_visibility"`
+	ContactVisibility        string `json:"contact_visibility"`
 
 	SkillGroups []SkillGroup `json:"skill_groups"`
 	Skills      []string     `json:"skills"` // read-only on save: every skill, in display order
@@ -141,6 +155,66 @@ const (
 	Rejected   = "Rejected"
 )
 
+// Stored review states of an experience entry (profile_experiences.verification).
+const (
+	ReviewUnverified = "unverified"
+	ReviewPending    = "pending"
+	ReviewVerified   = "verified"
+	ReviewRejected   = "rejected"
+)
+
+// LinkedExperience is a stored entry with its registered company ("" when
+// none) and its review state.
+type LinkedExperience struct {
+	CompanyID string
+	Entry     Experience
+	Review    string
+}
+
+// CarryReviews gives each saved entry its review state (manual "Blue Tick
+// Workflow"). An unchanged entry keeps its state, wherever it moved to. An
+// entry edited in place (same position and company) that was verified or
+// pending goes to pending, which puts it back in the company's queue; a
+// rejected one stays rejected until the candidate asks again. Anything else
+// starts unverified.
+func CarryReviews(old, next []LinkedExperience) []string {
+	out := make([]string, len(next))
+	used := make([]bool, len(old))
+	for i, n := range next {
+		if n.CompanyID == "" {
+			out[i] = ReviewUnverified
+			continue
+		}
+		for j, o := range old {
+			if !used[j] && o.CompanyID == n.CompanyID && sameEntry(o.Entry, n.Entry) {
+				out[i], used[j] = o.Review, true
+				break
+			}
+		}
+	}
+	for i, n := range next {
+		if out[i] != "" {
+			continue
+		}
+		out[i] = ReviewUnverified
+		if i < len(old) && !used[i] && old[i].CompanyID == n.CompanyID {
+			used[i] = true
+			switch old[i].Review {
+			case ReviewVerified, ReviewPending:
+				out[i] = ReviewPending
+			case ReviewRejected:
+				out[i] = ReviewRejected
+			}
+		}
+	}
+	return out
+}
+
+func sameEntry(a, b Experience) bool {
+	return a.Title == b.Title && a.Type == b.Type && a.Start == b.Start && a.End == b.End &&
+		a.Current == b.Current && a.Promoted == b.Promoted && a.Description == b.Description
+}
+
 // Limits on list sizes (the resolve call takes at most 50 names).
 const (
 	MaxSkills      = 50
@@ -149,6 +223,29 @@ const (
 	MaxLocations   = 50
 	MaxExperiences = 50
 	maxListItems   = 20
+)
+
+// Visibility values for the privacy settings.
+const (
+	VisibleAll     = "all"
+	VisibleApplied = "applied"
+	VisibleHidden  = "hidden"
+)
+
+// ServingNotice is the availability that needs a last working date;
+// AvailableFromDate the one that needs an available-from date.
+const (
+	ServingNotice     = "Serving notice"
+	AvailableFromDate = "Available from date"
+)
+
+var (
+	SalaryPeriods  = []string{"year", "month", "hour"}
+	NoticeUnits    = map[string]int{"days": 1, "weeks": 7, "months": 30}
+	Availabilities = []string{"Available immediately", "Currently employed", ServingNotice, AvailableFromDate, "Not available"}
+	// TravelOptions: the doc lists "No Travel, Occasional Travel, specific
+	// percentage/range options".
+	TravelOptions = []string{"No travel", "Occasional travel", "Up to 25%", "Up to 50%", "Up to 75%", "Up to 100%"}
 )
 
 var (
@@ -209,18 +306,25 @@ func (p *Profile) Normalize() error {
 	if p.ExperienceYears < 0 || p.ExperienceYears > 99 {
 		return invalid("experience_years", "experience must be 0-99 years")
 	}
-	if p.Notice != "" && !slices.Contains(jobs.NoticePeriods, p.Notice) {
-		return invalid("notice", "unknown notice period")
-	}
-	if p.IsServingNotice {
-		if _, err := time.Parse(time.DateOnly, p.LastWorkingDate); err != nil {
-			return invalid("last_working_date", "add your last working date")
-		}
-	} else {
-		p.LastWorkingDate = ""
+	if err := p.normalizeAvailability(); err != nil {
+		return err
 	}
 	if p.SalaryCurrency = strings.ToUpper(strings.TrimSpace(p.SalaryCurrency)); !currencyCode.MatchString(p.SalaryCurrency) {
 		return invalid("salary_currency", "unknown currency")
+	}
+	for field, period := range map[string]*string{"current_salary_period": &p.CurrentSalaryPeriod, "expected_salary_period": &p.ExpectedSalaryPeriod} {
+		if *period == "" {
+			*period = "year"
+		}
+		if !slices.Contains(SalaryPeriods, *period) {
+			return invalid(field, "a salary period is year, month or hour")
+		}
+	}
+	if err := p.normalizePrivacy(); err != nil {
+		return err
+	}
+	if p.Travel != "" && !slices.Contains(TravelOptions, p.Travel) {
+		return invalid("travel", "unknown travel preference")
 	}
 	for field, v := range map[string]float64{"current_salary": p.CurrentSalary, "expected_salary": p.ExpectedSalary} {
 		if v < 0 || v > 1e12 {
@@ -258,6 +362,84 @@ func (p *Profile) Normalize() error {
 		return err
 	}
 	return p.Details.normalize()
+}
+
+// normalizeAvailability checks the availability, its date and the notice
+// period. A notice given as number + unit sets the job-filter bucket.
+func (p *Profile) normalizeAvailability() error {
+	if p.Availability == "" && p.IsServingNotice {
+		p.Availability = ServingNotice
+	}
+	if p.Availability != "" && !slices.Contains(Availabilities, p.Availability) {
+		return invalid("availability", "unknown availability")
+	}
+	p.IsServingNotice = p.Availability == ServingNotice
+	for _, d := range []struct {
+		needed       bool
+		field, label string
+		value        *string
+	}{
+		{p.IsServingNotice, "last_working_date", "add your last working date", &p.LastWorkingDate},
+		{p.Availability == AvailableFromDate, "available_from", "add the date you're available from", &p.AvailableFrom},
+	} {
+		if !d.needed {
+			*d.value = ""
+		} else if _, err := time.Parse(time.DateOnly, *d.value); err != nil {
+			return invalid(d.field, d.label)
+		}
+	}
+
+	if p.NoticeUnit == "" {
+		p.NoticeValue = 0
+		if p.Notice != "" && !slices.Contains(jobs.NoticePeriods, p.Notice) {
+			return invalid("notice", "unknown notice period")
+		}
+		return nil
+	}
+	days, ok := NoticeUnits[p.NoticeUnit]
+	if days *= p.NoticeValue; !ok || p.NoticeValue < 0 || days > 365 {
+		return invalid("notice_value", "a notice period is 0 to 365 days, 52 weeks or 12 months")
+	}
+	p.Notice = NoticeBucket(days)
+	return nil
+}
+
+// NoticeBucket maps a notice in days to the job filter's notice periods.
+func NoticeBucket(days int) string {
+	for _, b := range []struct {
+		max   int
+		label string
+	}{{0, "Immediate"}, {15, "15 days"}, {30, "30 days"}, {45, "45 days"}, {60, "60 days"}, {90, "90 days"}} {
+		if days <= b.max {
+			return b.label
+		}
+	}
+	return "More than 90 days"
+}
+
+// normalizePrivacy checks each visibility. A missing one takes the private
+// default, so a client that doesn't send it never makes a field public.
+func (p *Profile) normalizePrivacy() error {
+	for _, v := range []struct {
+		field   string
+		value   *string
+		allowed []string
+		def     string
+	}{
+		{"current_salary_visibility", &p.CurrentSalaryVisibility, []string{VisibleAll, VisibleApplied, VisibleHidden}, VisibleHidden},
+		{"expected_salary_visibility", &p.ExpectedSalaryVisibility, []string{VisibleAll, VisibleApplied}, VisibleApplied},
+		{"hourly_rate_visibility", &p.HourlyRateVisibility, []string{VisibleAll, VisibleApplied}, VisibleApplied},
+		{"resume_visibility", &p.ResumeVisibility, []string{VisibleAll, VisibleApplied}, VisibleApplied},
+		{"contact_visibility", &p.ContactVisibility, []string{VisibleAll, VisibleApplied}, VisibleApplied},
+	} {
+		if *v.value == "" {
+			*v.value = v.def
+		}
+		if !slices.Contains(v.allowed, *v.value) {
+			return invalid(v.field, fmt.Sprintf("%s must be one of %s", v.field, strings.Join(v.allowed, ", ")))
+		}
+	}
+	return nil
 }
 
 // normalizeSkills keeps each skill once (in its first group) and drops
@@ -416,19 +598,20 @@ func (d *Details) normalize() error {
 	return nil
 }
 
-// Public returns the copy public visitors see: private amounts and contact
-// details are blanked (the privacy flags stay so the page can say so).
+// Public returns the copy public visitors see: anything not Visible to All
+// is blanked (the settings stay so the page can say so). "Applied Jobs Only"
+// fields reach recruiters through the application dossier instead.
 func (p Profile) Public() Profile {
-	if p.ContactPrivate {
+	if p.ContactVisibility != VisibleAll {
 		p.Email, p.Phone = "", ""
 	}
-	if p.CurrentSalaryPrivate {
+	if p.CurrentSalaryVisibility != VisibleAll {
 		p.CurrentSalary = 0
 	}
-	if p.SalaryPrivate {
+	if p.ExpectedSalaryVisibility != VisibleAll {
 		p.ExpectedSalary = 0
 	}
-	if p.HourlyPrivate {
+	if p.HourlyRateVisibility != VisibleAll {
 		p.HourlyRate = 0
 	}
 	p.LastWorkingDate = ""

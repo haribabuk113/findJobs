@@ -312,10 +312,11 @@ definitions:
       pending_requests:
         type: integer
       spent_this_month_paise:
-        description: Job-post debits from the company wallet this IST calendar month
+        description: |-
+          SpentThisMonthPaise is what job posts took from the company wallet this
+          IST calendar month; TotalCapsPaise sums the limits of current non-admin members.
         type: integer
       total_caps_paise:
-        description: Sum of the spending limits of current HR staff
         type: integer
       total_jobs:
         type: integer
@@ -365,7 +366,7 @@ definitions:
     properties:
       cap_type:
         description: |-
-          Company-credit allowance (HR; admins have no cap). SpentPaise is the
+          Company-credit allowance (HR and employees; admins have no cap). SpentPaise is the
           current cap period's spending: this IST month for a monthly cap.
         type: string
       email:
@@ -1212,12 +1213,24 @@ definitions:
         items:
           $ref: '#/definitions/profiles.Authorization'
         type: array
-      contact_private:
-        type: boolean
+      availability:
+        type: string
+      available_from:
+        description: YYYY-MM-DD, with "Available from date"
+        type: string
+      contact_visibility:
+        type: string
       current_salary:
         type: number
-      current_salary_private:
-        type: boolean
+      current_salary_period:
+        description: year, month or hour
+        type: string
+      current_salary_visibility:
+        description: |-
+          Privacy (newer doc §12): VisibleAll, VisibleApplied ("Applied Jobs
+          Only": recruiters of jobs the candidate applied to) or, for the current
+          salary only, VisibleHidden.
+        type: string
       education:
         items:
           $ref: '#/definitions/profiles.Education'
@@ -1226,6 +1239,10 @@ definitions:
         type: string
       expected_salary:
         type: number
+      expected_salary_period:
+        type: string
+      expected_salary_visibility:
+        type: string
       experience_years:
         type: integer
       experiences:
@@ -1234,25 +1251,36 @@ definitions:
         type: array
       gender:
         type: string
-      hourly_private:
-        type: boolean
       hourly_rate:
         type: number
+      hourly_rate_visibility:
+        type: string
       is_serving_notice:
+        description: |-
+          IsServingNotice mirrors Availability == "Serving notice"; older clients
+          that send only this flag still set that availability.
         type: boolean
       languages:
         items:
           $ref: '#/definitions/profiles.Language'
         type: array
       last_working_date:
-        description: YYYY-MM-DD or ""
+        description: YYYY-MM-DD, with "Serving notice"
         type: string
       location:
         type: string
       name:
         type: string
       notice:
+        description: |-
+          Notice is the job-filter bucket ("30 days"). When NoticeUnit is set it
+          is derived from NoticeValue + NoticeUnit (e.g. 2 + "months").
         type: string
+      notice_unit:
+        description: days, weeks, months or ""
+        type: string
+      notice_value:
+        type: integer
       open:
         type: boolean
       open_to_remote:
@@ -1274,12 +1302,10 @@ definitions:
         type: string
       relocation:
         type: string
-      resume_private:
-        type: boolean
+      resume_visibility:
+        type: string
       salary_currency:
         type: string
-      salary_private:
-        type: boolean
       saved:
         description: 'read-only: false for a starter profile not yet stored'
         type: boolean
@@ -1303,6 +1329,8 @@ definitions:
           type: string
         type: array
       title:
+        type: string
+      travel:
         type: string
       visible:
         type: boolean
@@ -2892,7 +2920,8 @@ paths:
             $ref: '#/definitions/adapters.Response'
       security:
       - sessionCookie: []
-      summary: 'Company wallet: balance and transactions, newest first (format=csv: full history as CSV)'
+      summary: 'Company wallet: balance and transactions, newest first (format=csv:
+        full history as CSV)'
       tags:
       - wallet
   /api/v1/companies/{slug}/wallet/topups:
@@ -3396,6 +3425,37 @@ paths:
       tags:
       - profiles
   /api/v1/profile/me/photo:
+    delete:
+      operationId: deleteMyPhoto
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  $ref: '#/definitions/profiles.Profile'
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Remove the profile photo
+      tags:
+      - profiles
     put:
       consumes:
       - image/jpeg

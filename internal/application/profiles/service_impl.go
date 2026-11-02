@@ -45,8 +45,10 @@ func (s *service) Mine(ctx context.Context, userID string) (*profiles.Profile, e
 	// Not stored until the first save; private-by-default like the page's preview.
 	starter := &profiles.Profile{
 		Slug: profiles.StarterSlug(name, hex.EncodeToString(suffix)), Name: name, Email: email,
-		SalaryCurrency: "INR", Visible: true, Open: true, CurrentSalaryPrivate: true, HourlyPrivate: true,
-		ContactPrivate: true, SalaryPrivate: true, ResumePrivate: true,
+		SalaryCurrency: "INR", CurrentSalaryPeriod: "year", ExpectedSalaryPeriod: "year", Visible: true, Open: true,
+		CurrentSalaryVisibility: profiles.VisibleHidden, ExpectedSalaryVisibility: profiles.VisibleApplied,
+		HourlyRateVisibility: profiles.VisibleApplied, ResumeVisibility: profiles.VisibleApplied,
+		ContactVisibility: profiles.VisibleApplied,
 	}
 	starter.EnsureLists()
 	return starter, nil
@@ -163,18 +165,25 @@ func (s *service) deletePhotoFile(ctx context.Context, key string) {
 }
 
 func (s *service) RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error) {
-	companyID, title, start, err := s.repo.Experience(ctx, userID, index)
+	x, err := s.repo.Experience(ctx, userID, index)
 	if err != nil {
 		return nil, err
 	}
-	if companyID == "" {
+	if x.CompanyID == "" {
 		return nil, &profiles.ValidationError{Field: "company", Message: "this company isn't on Referise yet, so it can't verify you"}
 	}
-	started, err := time.Parse("2006-01", start)
+	// A first request, or "Request Approval Again" after a rejection.
+	if x.Review == profiles.ReviewVerified || x.Review == profiles.ReviewPending {
+		return s.repo.Get(ctx, userID)
+	}
+	started, err := time.Parse("2006-01", x.Start)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.members.RequestMembership(ctx, userID, companyID, title, &started); err != nil {
+	if err := s.members.RequestMembership(ctx, userID, x.CompanyID, x.Title, &started); err != nil {
+		return nil, err
+	}
+	if err := s.repo.MarkPending(ctx, userID, index); err != nil {
 		return nil, err
 	}
 	return s.repo.Get(ctx, userID)

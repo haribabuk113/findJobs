@@ -113,15 +113,16 @@ func payApplication(ctx context.Context, tx pgx.Tx, userID, applicationID string
 }
 
 // loadDossier reads the candidate's profile as the recruiter receives it:
-// fields after the privacy rules (current salary travels only when the
-// candidate doesn't keep it private), plus their skill ids for the match.
+// fields after the privacy rules (an application is the "Applied Jobs Only"
+// context, so only a current salary Hidden from All stays out), plus their
+// skill ids for the match.
 func loadDossier(ctx context.Context, tx pgx.Tx, userID string) (dossier []byte, userSkills []int64, err error) {
 	var d applications.Dossier
 	var currentSalary float64
 	var salaryPrivate bool
 	err = tx.QueryRow(ctx, `
 		SELECT p.name, p.slug, p.contact_email, p.phone, p.location_label, p.experience_years, p.notice_period,
-			p.salary_currency, p.expected_salary::float8, p.current_salary::float8, p.hide_current_salary,
+			p.salary_currency, p.expected_salary::float8, p.current_salary::float8, p.current_salary_visibility = 'hidden',
 			ARRAY(SELECT ps.skill_id FROM profile_skills ps WHERE ps.user_id = p.user_id ORDER BY ps.position),
 			ARRAY(SELECT s.name FROM profile_skills ps JOIN skills s ON s.id = ps.skill_id
 				WHERE ps.user_id = p.user_id ORDER BY ps.position)

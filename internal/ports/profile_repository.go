@@ -12,6 +12,12 @@ type ProfileSkill struct {
 	Group   string
 }
 
+// ExperienceLink is one stored experience as the verification flow needs it.
+type ExperienceLink struct {
+	CompanyID, Title, Start string
+	Review                  string // profiles.Review*
+}
+
 // ProfileRepository persists candidate profiles.
 type ProfileRepository interface {
 	// Get returns the user's profile, or profiles.ErrNotFound.
@@ -27,9 +33,11 @@ type ProfileRepository interface {
 	// SetPhoto stores the photo key ("" removes the photo) and returns the
 	// replaced one ("" if none).
 	SetPhoto(ctx context.Context, userID, key string) (old string, err error)
-	// Experience returns the registered company linked to the experience at
-	// index (companyID "" when the company isn't on Referise).
-	Experience(ctx context.Context, userID string, index int) (companyID, title, start string, err error)
+	// Experience returns the experience at index with its registered company
+	// (CompanyID "" when the company isn't on Referise) and review state.
+	Experience(ctx context.Context, userID string, index int) (ExperienceLink, error)
+	// MarkPending puts the experience at index in its company's review queue.
+	MarkPending(ctx context.Context, userID string, index int) error
 	// Skills returns the user's skills in display order (empty without a profile).
 	Skills(ctx context.Context, userID string) ([]profiles.SkillRef, error)
 	// AddSkill appends a skill (its master when merged) to the last group;

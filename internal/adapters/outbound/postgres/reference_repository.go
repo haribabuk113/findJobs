@@ -95,6 +95,12 @@ func (r *RatesRepository) Replace(ctx context.Context, rates reference.Rates) er
 		WHERE r.currency = j.currency AND j.is_visible`); err != nil {
 		return err
 	}
+	// Profiles' expected salaries too, on the same yearly INR baseline as Save.
+	if _, err := tx.Exec(ctx, `
+		UPDATE profiles p SET expected_salary_inr = `+annualSQL("p.expected_salary * r.rate_to_inr", "p.expected_salary_period")+`
+		FROM exchange_rates r WHERE r.currency = p.salary_currency`); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 

@@ -25,12 +25,21 @@ func NewProfileRepository(pool *pgxpool.Pool) ports.ProfileRepository {
 }
 
 const profileColumns = `p.user_id, p.slug, p.name, p.headline, p.location_label, p.about, p.about_updated_at, p.photo_key,
-	p.gender, p.pronouns, p.contact_email, p.phone, p.experience_years, p.notice_period, p.serving_notice,
+	p.gender, p.pronouns, p.contact_email, p.phone, p.experience_years, p.notice_period, COALESCE(p.notice_value, 0),
+	p.notice_unit, p.availability, COALESCE(to_char(p.available_from, 'YYYY-MM-DD'), ''),
 	COALESCE(to_char(p.last_working_date, 'YYYY-MM-DD'), ''), p.salary_currency, p.current_salary::float8,
-	p.expected_salary::float8, p.hourly_rate::float8, p.work_types, p.location_ids,
+	p.current_salary_period, p.expected_salary::float8, p.expected_salary_period, p.hourly_rate::float8, p.work_types, p.location_ids,
 	ARRAY(SELECT d.name FROM unnest(p.designation_ids) WITH ORDINALITY AS u(id, ord) JOIN designations d ON d.id = u.id ORDER BY u.ord),
-	p.open_to_remote, p.relocation, p.is_public, p.open_to_work, p.hide_current_salary, p.hide_hourly_rate,
-	p.hide_contact, p.hide_expected_salary, p.resume_applications_only, p.details, p.website, p.work_mode`
+	p.open_to_remote, p.relocation, p.travel, p.is_public, p.open_to_work, p.current_salary_visibility,
+	p.expected_salary_visibility, p.hourly_rate_visibility, p.resume_visibility, p.contact_visibility,
+	p.details, p.website, p.work_mode`
+
+// annualSQL is the yearly amount of an amount column paid per periodColumn,
+// so expected salaries compare with jobs' annual figures.
+// ponytail: an hour is 1/2080 of a year (40 h x 52 weeks); make it a setting if regions need otherwise.
+func annualSQL(amount, periodColumn string) string {
+	return `(` + amount + ` * CASE ` + periodColumn + ` WHEN 'month' THEN 12 WHEN 'hour' THEN 2080 ELSE 1 END)`
+}
 
 func (r *ProfileRepository) Get(ctx context.Context, userID string) (*profiles.Profile, error) {
 	return r.load(ctx, `WHERE p.user_id = $1`, userID)
@@ -47,11 +56,12 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 	var details []byte
 	err := r.pool.QueryRow(ctx, `SELECT `+profileColumns+` FROM profiles p `+where, arg).Scan(
 		&userID, &p.Slug, &p.Name, &p.Title, &p.Location, &p.About, &p.AboutUpdated, &photo,
-		&p.Gender, &p.Pronouns, &p.Email, &p.Phone, &p.ExperienceYears, &p.Notice, &p.IsServingNotice,
-		&p.LastWorkingDate, &p.SalaryCurrency, &p.CurrentSalary, &p.ExpectedSalary, &p.HourlyRate,
-		&p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.OpenToRemote, &p.Relocation,
-		&p.Visible, &p.Open, &p.CurrentSalaryPrivate, &p.HourlyPrivate, &p.ContactPrivate, &p.SalaryPrivate,
-		&p.ResumePrivate, &details, &p.Website, &p.WorkMode)
+		&p.Gender, &p.Pronouns, &p.Email, &p.Phone, &p.ExperienceYears, &p.Notice, &p.NoticeValue,
+		&p.NoticeUnit, &p.Availability, &p.AvailableFrom,
+		&p.LastWorkingDate, &p.SalaryCurrency, &p.CurrentSalary, &p.CurrentSalaryPeriod, &p.ExpectedSalary,
+		&p.ExpectedSalaryPeriod, &p.HourlyRate, &p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.OpenToRemote,
+		&p.Relocation, &p.Travel, &p.Visible, &p.Open, &p.CurrentSalaryVisibility, &p.ExpectedSalaryVisibility,
+		&p.HourlyRateVisibility, &p.ResumeVisibility, &p.ContactVisibility, &details, &p.Website, &p.WorkMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, profiles.ErrNotFound
 	}
@@ -60,6 +70,7 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 	}
 	p.Saved = true
 	p.OwnerID = userID
+	p.IsServingNotice = p.Availability == profiles.ServingNotice
 	p.Photo = companies.FileURL(photo)
 	if err := json.Unmarshal(details, &p.Details); err != nil {
 		return nil, err
@@ -89,15 +100,13 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 		return nil, err
 	}
 
-	// Verification is the company's answer to the membership request.
+	// Each entry carries its own review state; a deleted company verifies nothing.
 	rows, err = r.pool.Query(ctx, `
 		SELECT e.company_name, e.title, e.work_type, e.start_month, COALESCE(e.end_month, ''), e.is_current,
 			e.promoted, e.description, COALESCE(c.slug, ''),
-			CASE m.status WHEN 'current' THEN 'Verified' WHEN 'past' THEN 'Verified' WHEN 'pending' THEN 'Pending'
-				WHEN 'rejected' THEN 'Rejected' ELSE 'Unverified' END
+			CASE WHEN c.id IS NULL THEN 'Unverified' ELSE initcap(e.verification) END
 		FROM profile_experiences e
 		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
-		LEFT JOIN company_members m ON m.company_id = c.id AND m.user_id = e.user_id
 		WHERE e.user_id = $1 ORDER BY e.position`, userID)
 	if err != nil {
 		return nil, err
@@ -155,38 +164,44 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 	if err != nil {
 		return err
 	}
-	var lastDay *time.Time
-	if d, err := time.Parse(time.DateOnly, p.LastWorkingDate); err == nil {
-		lastDay = &d
+	var noticeValue *int
+	if p.NoticeUnit != "" {
+		noticeValue = &p.NoticeValue
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO profiles (user_id, slug, name, headline, location_label, about, about_updated_at, gender, pronouns,
-			contact_email, phone, experience_years, notice_period, serving_notice, last_working_date, salary_currency,
-			current_salary, expected_salary, expected_salary_inr, hourly_rate, work_types, location_ids, designation_ids,
-			open_to_remote, relocation, is_public, open_to_work, hide_current_salary, hide_hourly_rate, hide_contact,
-			hide_expected_salary, resume_applications_only, details, website, work_mode)
+			contact_email, phone, experience_years, notice_period, notice_value, notice_unit, availability, available_from,
+			last_working_date, salary_currency, current_salary, current_salary_period, expected_salary,
+			expected_salary_period, expected_salary_inr, hourly_rate, work_types, location_ids, designation_ids,
+			open_to_remote, relocation, travel, is_public, open_to_work, current_salary_visibility,
+			expected_salary_visibility, hourly_rate_visibility, resume_visibility, contact_visibility, details, website, work_mode)
 		VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 <> '' THEN NOW() END, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $17 * $18::numeric, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+			$16, $17, $18, $19, $20, $21, $22, `+annualSQL("$21 * $23::numeric", "$22")+`, $24, $25, $26, $27, $28, $29, $30,
+			$31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
 		ON CONFLICT (user_id) DO UPDATE SET slug = EXCLUDED.slug, name = EXCLUDED.name, headline = EXCLUDED.headline,
 			location_label = EXCLUDED.location_label, about = EXCLUDED.about,
 			about_updated_at = CASE WHEN profiles.about IS DISTINCT FROM EXCLUDED.about THEN NOW() ELSE profiles.about_updated_at END,
 			gender = EXCLUDED.gender, pronouns = EXCLUDED.pronouns, contact_email = EXCLUDED.contact_email,
 			phone = EXCLUDED.phone, experience_years = EXCLUDED.experience_years, notice_period = EXCLUDED.notice_period,
-			serving_notice = EXCLUDED.serving_notice, last_working_date = EXCLUDED.last_working_date,
+			notice_value = EXCLUDED.notice_value, notice_unit = EXCLUDED.notice_unit, availability = EXCLUDED.availability,
+			available_from = EXCLUDED.available_from, last_working_date = EXCLUDED.last_working_date,
 			salary_currency = EXCLUDED.salary_currency, current_salary = EXCLUDED.current_salary,
-			expected_salary = EXCLUDED.expected_salary, expected_salary_inr = EXCLUDED.expected_salary_inr,
+			current_salary_period = EXCLUDED.current_salary_period, expected_salary = EXCLUDED.expected_salary,
+			expected_salary_period = EXCLUDED.expected_salary_period, expected_salary_inr = EXCLUDED.expected_salary_inr,
 			hourly_rate = EXCLUDED.hourly_rate, work_types = EXCLUDED.work_types, location_ids = EXCLUDED.location_ids,
 			designation_ids = EXCLUDED.designation_ids, open_to_remote = EXCLUDED.open_to_remote,
-			relocation = EXCLUDED.relocation, is_public = EXCLUDED.is_public, open_to_work = EXCLUDED.open_to_work,
-			hide_current_salary = EXCLUDED.hide_current_salary, hide_hourly_rate = EXCLUDED.hide_hourly_rate,
-			hide_contact = EXCLUDED.hide_contact, hide_expected_salary = EXCLUDED.hide_expected_salary,
-			resume_applications_only = EXCLUDED.resume_applications_only, details = EXCLUDED.details,
+			relocation = EXCLUDED.relocation, travel = EXCLUDED.travel, is_public = EXCLUDED.is_public,
+			open_to_work = EXCLUDED.open_to_work, current_salary_visibility = EXCLUDED.current_salary_visibility,
+			expected_salary_visibility = EXCLUDED.expected_salary_visibility,
+			hourly_rate_visibility = EXCLUDED.hourly_rate_visibility, resume_visibility = EXCLUDED.resume_visibility,
+			contact_visibility = EXCLUDED.contact_visibility, details = EXCLUDED.details,
 			website = EXCLUDED.website, work_mode = EXCLUDED.work_mode, updated_at = NOW()`,
 		userID, p.Slug, p.Name, p.Title, p.Location, p.About, p.Gender, p.Pronouns, p.Email, p.Phone,
-		p.ExperienceYears, p.Notice, p.IsServingNotice, lastDay, p.SalaryCurrency, p.CurrentSalary, p.ExpectedSalary,
-		rate, p.HourlyRate, p.WorkTypes, p.PreferredLocations, designationIDs, p.OpenToRemote, p.Relocation,
-		p.Visible, p.Open, p.CurrentSalaryPrivate, p.HourlyPrivate, p.ContactPrivate, p.SalaryPrivate,
-		p.ResumePrivate, details, p.Website, p.WorkMode)
+		p.ExperienceYears, p.Notice, noticeValue, p.NoticeUnit, p.Availability, dateOrNil(p.AvailableFrom),
+		dateOrNil(p.LastWorkingDate), p.SalaryCurrency, p.CurrentSalary, p.CurrentSalaryPeriod, p.ExpectedSalary,
+		p.ExpectedSalaryPeriod, rate, p.HourlyRate, p.WorkTypes, p.PreferredLocations, designationIDs, p.OpenToRemote,
+		p.Relocation, p.Travel, p.Visible, p.Open, p.CurrentSalaryVisibility, p.ExpectedSalaryVisibility,
+		p.HourlyRateVisibility, p.ResumeVisibility, p.ContactVisibility, details, p.Website, p.WorkMode)
 	if isUniqueViolation(err) {
 		return profiles.ErrSlugTaken
 	}
@@ -218,23 +233,76 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 			end[i] = &e.End
 		}
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM profile_experiences WHERE user_id = $1`, userID); err != nil {
+	// The entries being replaced, with their review states, so unchanged ones
+	// keep their blue tick and edited ones go back for review.
+	rows, err := tx.Query(ctx, `
+		DELETE FROM profile_experiences WHERE user_id = $1
+		RETURNING position, COALESCE(company_id, ''), title, work_type, start_month, COALESCE(end_month, ''),
+			is_current, promoted, description, verification`, userID)
+	if err != nil {
+		return err
+	}
+	old, err := collectLinked(rows)
+	if err != nil {
 		return err
 	}
 	// A company name that matches a registered company links to it, so the
 	// company can verify the entry (oldest company wins a name clash).
-	if _, err := tx.Exec(ctx, `
+	rows, err = tx.Query(ctx, `
 		INSERT INTO profile_experiences (user_id, position, company_id, company_name, title, work_type, start_month,
 			end_month, is_current, promoted, description)
 		SELECT $1, ord, (SELECT c.id FROM companies c WHERE lower(c.name) = lower(u.company) AND c.deleted_at IS NULL
 				ORDER BY c.created_at, c.id LIMIT 1),
 			company, title, kind, start, finish, cur, prom, descr
 		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bool[], $8::bool[], $9::text[])
-			WITH ORDINALITY AS u(company, title, kind, start, finish, cur, prom, descr, ord)`,
-		userID, company, title, kind, start, end, current, promoted, desc); err != nil {
+			WITH ORDINALITY AS u(company, title, kind, start, finish, cur, prom, descr, ord)
+		RETURNING position, COALESCE(company_id, ''), title, work_type, start_month, COALESCE(end_month, ''),
+			is_current, promoted, description, verification`,
+		userID, company, title, kind, start, end, current, promoted, desc)
+	if err != nil {
+		return err
+	}
+	next, err := collectLinked(rows)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE profile_experiences e SET verification = u.review
+		FROM unnest($2::text[]) WITH ORDINALITY AS u(review, ord)
+		WHERE e.user_id = $1 AND e.position = u.ord`, userID, profiles.CarryReviews(old, next)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// collectLinked reads entries in position order (RETURNING has no ORDER BY).
+func collectLinked(rows pgx.Rows) ([]profiles.LinkedExperience, error) {
+	type row struct {
+		pos int
+		e   profiles.LinkedExperience
+	}
+	got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
+		var x row
+		e := &x.e.Entry
+		err := r.Scan(&x.pos, &x.e.CompanyID, &e.Title, &e.Type, &e.Start, &e.End, &e.Current, &e.Promoted,
+			&e.Description, &x.e.Review)
+		return x, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]profiles.LinkedExperience, len(got))
+	for _, x := range got {
+		out[x.pos-1] = x.e // positions are 1..n
+	}
+	return out, nil
+}
+
+func dateOrNil(s string) *time.Time {
+	if d, err := time.Parse(time.DateOnly, s); err == nil {
+		return &d
+	}
+	return nil
 }
 
 func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (string, error) {
@@ -251,20 +319,22 @@ func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (s
 	return *old, nil
 }
 
-func (r *ProfileRepository) Experience(ctx context.Context, userID string, index int) (string, string, string, error) {
-	var companyID *string
-	var title, start string
+func (r *ProfileRepository) Experience(ctx context.Context, userID string, index int) (ports.ExperienceLink, error) {
+	var x ports.ExperienceLink
 	err := r.pool.QueryRow(ctx, `
-		SELECT c.id, e.title, e.start_month FROM profile_experiences e
+		SELECT COALESCE(c.id, ''), e.title, e.start_month, e.verification FROM profile_experiences e
 		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
-		WHERE e.user_id = $1 AND e.position = $2`, userID, index+1).Scan(&companyID, &title, &start)
+		WHERE e.user_id = $1 AND e.position = $2`, userID, index+1).Scan(&x.CompanyID, &x.Title, &x.Start, &x.Review)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", "", &profiles.NotFoundError{Message: "experience not found"}
+		return x, &profiles.NotFoundError{Message: "experience not found"}
 	}
-	if err != nil || companyID == nil {
-		return "", title, start, err
-	}
-	return *companyID, title, start, nil
+	return x, err
+}
+
+func (r *ProfileRepository) MarkPending(ctx context.Context, userID string, index int) error {
+	_, err := r.pool.Exec(ctx, `UPDATE profile_experiences SET verification = 'pending' WHERE user_id = $1 AND position = $2`,
+		userID, index+1)
+	return err
 }
 
 func (r *ProfileRepository) Skills(ctx context.Context, userID string) ([]profiles.SkillRef, error) {

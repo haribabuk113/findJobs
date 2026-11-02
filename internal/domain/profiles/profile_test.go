@@ -56,6 +56,15 @@ func TestNormalizeRejects(t *testing.T) {
 		"experience years":    func(p *Profile) { p.ExperienceYears = 100 },
 		"notice":              func(p *Profile) { p.Notice = "2 days" },
 		"serving without day": func(p *Profile) { p.IsServingNotice = true },
+		"from without date":   func(p *Profile) { p.Availability = AvailableFromDate },
+		"availability":        func(p *Profile) { p.Availability = "Maybe" },
+		"notice unit":         func(p *Profile) { p.NoticeUnit, p.NoticeValue = "years", 1 },
+		"notice too long":     func(p *Profile) { p.NoticeUnit, p.NoticeValue = "months", 13 },
+		"negative notice":     func(p *Profile) { p.NoticeUnit, p.NoticeValue = "days", -1 },
+		"salary period":       func(p *Profile) { p.ExpectedSalaryPeriod = "fortnight" },
+		"travel":              func(p *Profile) { p.Travel = "Always" },
+		"hidden contact":      func(p *Profile) { p.ContactVisibility = VisibleHidden },
+		"visibility value":    func(p *Profile) { p.CurrentSalaryVisibility = "friends" },
 		"currency":            func(p *Profile) { p.SalaryCurrency = "RUPEES" },
 		"negative salary":     func(p *Profile) { p.ExpectedSalary = -1 },
 		"work type":           func(p *Profile) { p.WorkTypes = []string{"Nap"} },
@@ -84,14 +93,72 @@ func TestNormalizeRejects(t *testing.T) {
 
 func TestPublicHidesPrivateFields(t *testing.T) {
 	p := Profile{Email: "a@b.co", Phone: "1", CurrentSalary: 1, ExpectedSalary: 2, HourlyRate: 3, LastWorkingDate: "2026-01-01",
-		ContactPrivate: true, CurrentSalaryPrivate: true, SalaryPrivate: true, HourlyPrivate: true}
+		ContactVisibility: VisibleApplied, CurrentSalaryVisibility: VisibleHidden, ExpectedSalaryVisibility: VisibleApplied,
+		HourlyRateVisibility: VisibleApplied}
 	pub := p.Public()
 	if pub.Email != "" || pub.Phone != "" || pub.CurrentSalary != 0 || pub.ExpectedSalary != 0 || pub.HourlyRate != 0 || pub.LastWorkingDate != "" {
 		t.Fatalf("private data leaked: %+v", pub)
 	}
-	p.ContactPrivate, p.SalaryPrivate = false, false
-	if pub = p.Public(); pub.Email == "" || pub.ExpectedSalary != 2 {
-		t.Fatalf("public data hidden: %+v", pub)
+	p.ContactVisibility, p.ExpectedSalaryVisibility, p.CurrentSalaryVisibility = VisibleAll, VisibleAll, VisibleApplied
+	if pub = p.Public(); pub.Email == "" || pub.ExpectedSalary != 2 || pub.CurrentSalary != 0 {
+		t.Fatalf("visible-to-all hidden or applied-only shown: %+v", pub)
+	}
+}
+
+func TestPrivacyDefaultsAndAvailability(t *testing.T) {
+	p := validProfile()
+	p.IsServingNotice, p.LastWorkingDate, p.AvailableFrom = true, "2026-12-01", "2026-12-15"
+	p.NoticeUnit, p.NoticeValue = "weeks", 3
+	if err := p.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if p.CurrentSalaryVisibility != VisibleHidden || p.ContactVisibility != VisibleApplied || p.ExpectedSalaryPeriod != "year" {
+		t.Fatalf("defaults: %+v", p)
+	}
+	// The old flag still means serving notice; a date the availability doesn't use is dropped.
+	if p.Availability != ServingNotice || !p.IsServingNotice || p.AvailableFrom != "" || p.Notice != "30 days" {
+		t.Fatalf("availability: %q %v %q %q", p.Availability, p.IsServingNotice, p.AvailableFrom, p.Notice)
+	}
+	p.Availability, p.IsServingNotice, p.AvailableFrom, p.NoticeUnit = AvailableFromDate, false, "2026-12-15", ""
+	if err := p.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if p.LastWorkingDate != "" || p.IsServingNotice || p.NoticeValue != 0 || p.Notice != "30 days" {
+		t.Fatalf("available from: %+v", p)
+	}
+	for days, want := range map[int]string{0: "Immediate", 10: "15 days", 31: "45 days", 90: "90 days", 91: "More than 90 days"} {
+		if got := NoticeBucket(days); got != want {
+			t.Errorf("NoticeBucket(%d) = %q, want %q", days, got, want)
+		}
+	}
+}
+
+func TestCarryReviews(t *testing.T) {
+	e := func(title string) Experience { return Experience{Title: title, Type: "Full-time", Start: "2023-01"} }
+	old := []LinkedExperience{
+		{CompanyID: "a", Entry: e("Designer"), Review: ReviewVerified},
+		{CompanyID: "b", Entry: e("Intern"), Review: ReviewRejected},
+		{CompanyID: "c", Entry: e("Lead"), Review: ReviewVerified},
+		{CompanyID: "d", Entry: e("Writer"), Review: ReviewPending},
+	}
+	next := []LinkedExperience{
+		{CompanyID: "c", Entry: e("Lead")},            // moved, unchanged: keeps its tick
+		{CompanyID: "b", Entry: e("Intern (edited)")}, // edited in place, was rejected: stays rejected
+		{CompanyID: "x", Entry: e("Lead")},            // new company at an old position
+		{CompanyID: "d", Entry: e("Writer, edited")},  // edited while pending: still pending
+		{CompanyID: "a", Entry: e("Senior Designer")}, // new position: not an in-place edit
+		{CompanyID: "", Entry: e("Freelance")},        // no registered company
+	}
+	want := []string{ReviewVerified, ReviewRejected, ReviewUnverified, ReviewPending, ReviewUnverified, ReviewUnverified}
+	got := CarryReviews(old, next)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+	// A verified entry edited in place goes back for review.
+	if got := CarryReviews(old[:1], []LinkedExperience{{CompanyID: "a", Entry: e("Senior Designer")}}); got[0] != ReviewPending {
+		t.Fatalf("edited verified entry: %s", got[0])
 	}
 }
 

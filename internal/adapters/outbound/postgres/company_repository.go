@@ -208,6 +208,12 @@ func (r *CompanyRepository) SetImage(ctx context.Context, slug, userID, kind, ke
 	return *old, nil
 }
 
+// entryAwaitingReview: member m (current or past) has an experience entry
+// at the company waiting for review, e.g. a verified entry they edited.
+const entryAwaitingReview = `(m.status IN ('current', 'past') AND EXISTS (
+	SELECT 1 FROM profile_experiences e WHERE e.company_id = m.company_id AND e.user_id = m.user_id
+		AND e.verification = 'pending'))`
+
 func (r *CompanyRepository) Members(ctx context.Context, slug, userID, status string) ([]companies.Member, error) {
 	var members []companies.Member
 	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
@@ -215,7 +221,7 @@ func (r *CompanyRepository) Members(ctx context.Context, slug, userID, status st
 			SELECT m.user_id::text, u.name, u.email, m.role, m.status, m.title, m.started_on::text, m.created_at,
 				m.cap_type, m.limit_paise, `+spentNow+`
 			FROM company_members m JOIN users u ON u.id = m.user_id
-			WHERE m.company_id = $1 AND m.status = $2
+			WHERE m.company_id = $1 AND (m.status = $2 OR ($2 = 'pending' AND `+entryAwaitingReview+`))
 			ORDER BY m.created_at DESC`, companyID, status)
 		if err != nil {
 			return err
@@ -231,14 +237,22 @@ func (r *CompanyRepository) Members(ctx context.Context, slug, userID, status st
 
 func (r *CompanyRepository) DecideMember(ctx context.Context, slug, adminID, memberID string, approve bool) error {
 	return r.asAdmin(ctx, slug, adminID, func(tx pgx.Tx, companyID string) error {
-		status := companies.StatusRejected
+		status, review := companies.StatusRejected, "rejected"
 		if approve {
-			status = companies.StatusCurrent
+			status, review = companies.StatusCurrent, "verified"
 		}
-		tag, err := tx.Exec(ctx, `
+		// A new member's request, and/or experience entries waiting for review
+		// (an edited verified entry comes back without touching the membership).
+		joined, err := tx.Exec(ctx, `
 			UPDATE company_members SET status = $3, updated_at = NOW()
 			WHERE company_id = $1 AND user_id = $2 AND status = 'pending'`, companyID, memberID, status)
-		if err == nil && tag.RowsAffected() == 0 {
+		if err != nil {
+			return err
+		}
+		entries, err := tx.Exec(ctx, `
+			UPDATE profile_experiences SET verification = $3
+			WHERE company_id = $1 AND user_id = $2 AND verification = 'pending'`, companyID, memberID, review)
+		if err == nil && joined.RowsAffected()+entries.RowsAffected() == 0 {
 			return &companies.NotFoundError{Message: "no pending request from this person"}
 		}
 		return err
@@ -316,12 +330,12 @@ func (r *CompanyRepository) Dashboard(ctx context.Context, slug, userID string) 
 				COUNT(*) FILTER (WHERE status = 'current' AND role = 'admin'),
 				COUNT(*) FILTER (WHERE status = 'current' AND role = 'hr'),
 				COUNT(*) FILTER (WHERE status = 'current'),
-				COUNT(*) FILTER (WHERE status = 'pending'),
+				COUNT(*) FILTER (WHERE m.status = 'pending' OR `+entryAwaitingReview+`),
 				(SELECT COALESCE(SUM(-l.amount_paise), 0) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
 					WHERE w.company_id = $1 AND l.kind = 'job_post'
 					AND l.created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'),
 				COALESCE(SUM(limit_paise) FILTER (WHERE status = 'current' AND role <> 'admin'), 0)
-			FROM company_members WHERE company_id = $1`, companyID).
+			FROM company_members m WHERE m.company_id = $1`, companyID).
 			Scan(&d.TotalJobs, &d.ActiveJobs, &d.Applications, &d.Admins, &d.HR, &d.Employees, &d.PendingRequests,
 				&d.SpentThisMonthPaise, &d.TotalCapsPaise)
 	})
