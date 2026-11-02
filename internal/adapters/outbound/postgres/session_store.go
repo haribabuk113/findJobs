@@ -56,7 +56,7 @@ func (s *SessionStore) Lookup(ctx context.Context, sessionID string) (*auth.Sess
 	const query = `
 		SELECT s.id::text, s.user_id::text, u.iam_user_id, s.access_expires_at, s.expires_at, s.last_seen_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id = $1 AND s.expires_at > NOW()`
+		WHERE s.id = $1 AND s.expires_at > NOW() AND u.status <> 'deleted'`
 	var st auth.SessionState
 	err := s.pool.QueryRow(ctx, query, sessionID).
 		Scan(&st.ID, &st.UserID, &st.IAMUserID, &st.AccessExpiresAt, &st.ExpiresAt, &st.LastSeenAt)
@@ -155,6 +155,26 @@ func (s *SessionStore) DeleteSession(ctx context.Context, sessionID string) (str
 		return "", nil // deleted locally; nothing usable to revoke at IAM
 	}
 	return string(plain), nil
+}
+
+func (s *SessionStore) DeleteUserSessions(ctx context.Context, userID string) ([]auth.Session, error) {
+	rows, err := s.pool.Query(ctx, `DELETE FROM sessions WHERE user_id = $1 RETURNING id::text, refresh_token_enc, key_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (auth.Session, error) {
+		var sess auth.Session
+		var refresh []byte
+		var kid string
+		if err := row.Scan(&sess.ID, &refresh, &kid); err != nil {
+			return sess, err
+		}
+		sess.UserID = userID
+		if plain, err := s.keys.Open(kid, refresh, refreshAAD(sess.ID)); err == nil {
+			sess.RefreshToken = string(plain)
+		}
+		return sess, nil
+	})
 }
 
 // PurgeSessions returns the daily session cleanup (system requirements S5):

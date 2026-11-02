@@ -44,3 +44,22 @@ func TestJobPostFee(t *testing.T) {
 		}
 	}
 }
+
+func TestLegalDocuments(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "dev")
+	t.Setenv("LEGAL_DOCUMENTS", "")
+	if cfg, err := Load(); err != nil || len(cfg.LegalDocuments) != 0 {
+		t.Fatalf("unset: %+v %v", cfg, err)
+	}
+	t.Setenv("LEGAL_DOCUMENTS", "terms:2026-11-02, privacy:v1.2")
+	cfg, err := Load()
+	if err != nil || len(cfg.LegalDocuments) != 2 || cfg.LegalDocuments[1] != (LegalDocument{"privacy", "v1.2"}) {
+		t.Fatalf("parsed: %+v %v", cfg, err)
+	}
+	for _, v := range []string{"terms", "terms:", ":v1", "terms:v1,terms:v2", "Terms:v1", "terms:v 1"} {
+		t.Setenv("LEGAL_DOCUMENTS", v)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "LEGAL_DOCUMENTS") {
+			t.Errorf("%q: got %v", v, err)
+		}
+	}
+}

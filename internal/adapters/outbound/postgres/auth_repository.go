@@ -22,11 +22,18 @@ func NewAuthRepository(pool *pgxpool.Pool) ports.AuthRepository {
 }
 
 func (r *AuthRepository) UpsertUser(ctx context.Context, user *auth.User) (*auth.User, error) {
+	// A new account also gets its creation record (system requirements §21);
+	// xmax = 0 marks a row this statement inserted rather than updated.
 	const query = `
-		INSERT INTO users (iam_user_id, name, email, status) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (iam_user_id) DO UPDATE
-		SET name = EXCLUDED.name, email = EXCLUDED.email, status = EXCLUDED.status, updated_at = NOW()
-		RETURNING id::text, iam_user_id, name, email, status`
+		WITH u AS (
+			INSERT INTO users (iam_user_id, name, email, status) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (iam_user_id) DO UPDATE
+			SET name = EXCLUDED.name, email = EXCLUDED.email, status = EXCLUDED.status, updated_at = NOW()
+			RETURNING id, iam_user_id, name, email, status, xmax = 0 AS inserted
+		), created AS (
+			INSERT INTO account_events (user_id, ecosystem_id, kind) SELECT id, iam_user_id, 'created' FROM u WHERE inserted
+		)
+		SELECT id::text, iam_user_id, name, email, status FROM u`
 	var u auth.User
 	err := r.pool.QueryRow(ctx, query, user.IAMUserID, user.Name, user.Email, user.Status).
 		Scan(&u.ID, &u.IAMUserID, &u.Name, &u.Email, &u.Status)

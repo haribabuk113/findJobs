@@ -6,9 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"findJobs/internal/adapters"
 	apppayments "findJobs/internal/application/payments"
-	domaincompanies "findJobs/internal/domain/companies"
 	domainpayments "findJobs/internal/domain/payments"
 
 	"github.com/gin-gonic/gin"
@@ -77,14 +75,14 @@ func (h *PaymentsHandler) CompanyWallet(ctx *gin.Context) {
 	case "csv":
 		h.walletCSV(ctx, owner)
 	default:
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("format must be csv"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("format must be csv"))
 	}
 }
 
 func (h *PaymentsHandler) walletCSV(ctx *gin.Context, owner domainpayments.Owner) {
 	w, err := h.service.Ledger(ctx, owner)
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	// The slug is safe in the header: the lookup above matched it to a stored slug.
@@ -101,11 +99,11 @@ func (h *PaymentsHandler) wallet(ctx *gin.Context, owner domainpayments.Owner) {
 	page, err1 := queryInt(ctx, "page")
 	size, err2 := queryInt(ctx, "page_size")
 	if err1 != nil || err2 != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("page and page_size must be numbers"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("page and page_size must be numbers"))
 		return
 	}
 	result, err := h.service.Wallet(ctx, owner, page, size)
-	h.respond(ctx, http.StatusOK, "Wallet", result, err)
+	respond(ctx, http.StatusOK, "Wallet", result, err)
 }
 
 func queryInt(ctx *gin.Context, key string) (int, error) {
@@ -151,11 +149,11 @@ func (h *PaymentsHandler) CompanyTopup(ctx *gin.Context) {
 func (h *PaymentsHandler) topup(ctx *gin.Context, owner domainpayments.Owner) {
 	var in topupRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give amount_paise"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("give amount_paise"))
 		return
 	}
 	result, err := h.service.Topup(ctx, owner, in.AmountPaise)
-	h.respond(ctx, http.StatusCreated, "Top-up started", result, err)
+	respond(ctx, http.StatusCreated, "Top-up started", result, err)
 }
 
 // Webhook handles POST /payments/webhook from the gateway. 2xx tells the
@@ -173,38 +171,9 @@ func (h *PaymentsHandler) topup(ctx *gin.Context, owner domainpayments.Owner) {
 func (h *PaymentsHandler) Webhook(ctx *gin.Context) {
 	body, err := ctx.GetRawData()
 	if err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("unreadable body"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("unreadable body"))
 		return
 	}
 	err = h.service.HandleWebhook(ctx, body, ctx.GetHeader("X-Razorpay-Signature"))
-	h.respond(ctx, http.StatusOK, "Webhook processed", nil, err)
-}
-
-func (h *PaymentsHandler) respond(ctx *gin.Context, status int, message string, result any, err error) {
-	if err != nil {
-		h.failErr(ctx, err)
-		return
-	}
-	ctx.Header("Cache-Control", "private, no-store")
-	ctx.JSON(status, adapters.BuildResponse(message, result, nil))
-}
-
-func (h *PaymentsHandler) failErr(ctx *gin.Context, err error) {
-	switch {
-	case domainpayments.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	case domainpayments.IsUnavailable(err):
-		h.fail(ctx, http.StatusServiceUnavailable, err)
-	case domaincompanies.IsNotFound(err):
-		h.fail(ctx, http.StatusNotFound, err)
-	case domaincompanies.IsForbidden(err):
-		h.fail(ctx, http.StatusForbidden, err)
-	default:
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *PaymentsHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
+	respond(ctx, http.StatusOK, "Webhook processed", nil, err)
 }

@@ -44,6 +44,19 @@ func (f *fakeStore) DeleteSession(_ context.Context, id string) (string, error) 
 	return "rt", nil
 }
 
+func (f *fakeStore) DeleteUserSessions(_ context.Context, userID string) ([]auth.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []auth.Session
+	for id, st := range f.state {
+		if st.UserID == userID {
+			out = append(out, auth.Session{ID: id, UserID: userID, RefreshToken: "rt"})
+			delete(f.state, id)
+		}
+	}
+	return out, nil
+}
+
 func redisClient(t *testing.T) *goredis.Client {
 	addr := os.Getenv("REDIS_TEST_ADDR")
 	if addr == "" {
@@ -175,4 +188,24 @@ func TestRedisDownFallsBackToStore(t *testing.T) {
 
 func containsAny(s string, subs ...string) bool {
 	return slices.ContainsFunc(subs, func(sub string) bool { return strings.Contains(s, sub) })
+}
+
+// Deleting an account ends every cached session of the user at once.
+func TestDeleteUserSessionsTombstonesCachedEntries(t *testing.T) {
+	rdb := redisClient(t)
+	ctx := context.Background()
+	c, _, id := setup(t, rdb, 5*time.Minute)
+	if _, err := c.Lookup(ctx, id); err != nil { // now cached
+		t.Fatal(err)
+	}
+	ended, err := c.DeleteUserSessions(ctx, "u1")
+	if err != nil || len(ended) != 1 || ended[0].ID != id || ended[0].RefreshToken != "rt" {
+		t.Fatalf("ended: %+v %v", ended, err)
+	}
+	if _, err := c.Lookup(ctx, id); !auth.IsUnauthorized(err) {
+		t.Fatalf("after account deletion: want ErrUnauthorized, got %v", err)
+	}
+	if v := rdb.Get(ctx, cacheKey(id)).Val(); v != tombstone {
+		t.Fatalf("cached entry not tombstoned: %q", v)
+	}
 }

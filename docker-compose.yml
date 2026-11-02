@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15.19
@@ -73,6 +71,10 @@ services:
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
       - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-}
       - JOB_POST_FEE_PAISE=${JOB_POST_FEE_PAISE:-200}
+      # Mandatory legal documents at their current versions (id:version,...).
+      # Signed-in users must accept each version before using the app; bump a
+      # version to ask everyone again. Empty turns the consent gate off.
+      - LEGAL_DOCUMENTS=${LEGAL_DOCUMENTS:-terms:2026-11-02,privacy:2026-11-02,cookies:2026-11-02}
     depends_on:
       postgres:
         condition: service_healthy

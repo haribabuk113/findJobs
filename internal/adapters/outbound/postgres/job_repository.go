@@ -131,6 +131,7 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		}
 	}
 
+	whereArgs := len(q.args) // the ORDER BY and paging arguments come after
 	order := map[string]string{
 		"newest": "j.posted_at DESC, j.id",
 		"salary": "j.normalized_inr_amount DESC NULLS LAST, j.posted_at DESC, j.id",
@@ -146,9 +147,10 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 			+ cardinality(j.skill_ids)) / (2 * cardinality(j.skill_ids)) END DESC, j.posted_at DESC, j.id`
 	}
 
+	from := `FROM jobs j LEFT JOIN companies co ON co.id = j.company_id
+		WHERE ` + strings.Join(q.where, "\n\t\t\tAND ")
 	sql := `SELECT ` + jobCardColumns + `, COUNT(*) OVER ()
-		FROM jobs j LEFT JOIN companies co ON co.id = j.company_id
-		WHERE ` + strings.Join(q.where, "\n\t\t\tAND ") + `
+		` + from + `
 		ORDER BY ` + order + `
 		LIMIT ` + q.arg(c.PageSize) + ` OFFSET ` + q.arg((c.Page-1)*c.PageSize)
 
@@ -166,7 +168,14 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		}
 		result.Jobs = append(result.Jobs, j)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Past the last page the window count has no row to ride on.
+	if len(result.Jobs) == 0 && c.Page > 1 {
+		err = r.pool.QueryRow(ctx, `SELECT COUNT(*) `+from, q.args[:whereArgs]...).Scan(&result.Total)
+	}
+	return result, err
 }
 
 // jobCardColumns is the job card shape shared by search and job details

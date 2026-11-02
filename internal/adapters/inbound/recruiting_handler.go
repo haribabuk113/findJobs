@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"findJobs/internal/adapters"
 	appjobs "findJobs/internal/application/jobs"
 	domainjobs "findJobs/internal/domain/jobs"
-	domainpayments "findJobs/internal/domain/payments"
 
 	"github.com/gin-gonic/gin"
 )
@@ -66,7 +64,7 @@ type recruiterCard struct {
 //	@Router		/api/v1/recruiter/companies [get]
 func (h *RecruitingHandler) Companies(ctx *gin.Context) {
 	result, err := h.service.PosterCompanies(ctx, ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Companies retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Companies retrieved successfully", result, err)
 }
 
 // Post handles POST /recruiter/jobs.
@@ -84,7 +82,7 @@ func (h *RecruitingHandler) Companies(ctx *gin.Context) {
 func (h *RecruitingHandler) Post(ctx *gin.Context) {
 	var in domainjobs.PostInput
 	if err := ctx.ShouldBindJSON(&in); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid job post"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid job post"))
 		return
 	}
 	result, err := h.service.Post(ctx, ctx.GetString(userIDKey), ctx.GetHeader("Idempotency-Key"), &in)
@@ -92,7 +90,7 @@ func (h *RecruitingHandler) Post(ctx *gin.Context) {
 	if result != nil && result.Status == domainjobs.StatePending {
 		message = "Job saved; it publishes once the payment completes"
 	}
-	h.respond(ctx, http.StatusCreated, message, result, err)
+	respond(ctx, http.StatusCreated, message, result, err)
 }
 
 // Checkout handles POST /recruiter/jobs/:id/checkout: pay for a pending job again.
@@ -108,7 +106,7 @@ func (h *RecruitingHandler) Post(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/jobs/{id}/checkout [post]
 func (h *RecruitingHandler) Checkout(ctx *gin.Context) {
 	result, err := h.service.Checkout(ctx, ctx.GetString(userIDKey), ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Checkout started", result, err)
+	respond(ctx, http.StatusOK, "Checkout started", result, err)
 }
 
 // Edit handles PUT /recruiter/jobs/:id (tier, company and payment can't change).
@@ -127,11 +125,11 @@ func (h *RecruitingHandler) Checkout(ctx *gin.Context) {
 func (h *RecruitingHandler) Edit(ctx *gin.Context) {
 	var in domainjobs.PostInput
 	if err := ctx.ShouldBindJSON(&in); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid job post"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid job post"))
 		return
 	}
 	result, err := h.service.Edit(ctx, ctx.GetString(userIDKey), ctx.Param("id"), &in)
-	h.respond(ctx, http.StatusOK, "Job updated successfully", result, err)
+	respond(ctx, http.StatusOK, "Job updated successfully", result, err)
 }
 
 // Close handles POST /recruiter/jobs/:id/close.
@@ -147,7 +145,7 @@ func (h *RecruitingHandler) Edit(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/jobs/{id}/close [post]
 func (h *RecruitingHandler) Close(ctx *gin.Context) {
 	err := h.service.Close(ctx, ctx.GetString(userIDKey), ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Job closed", nil, err)
+	respond(ctx, http.StatusOK, "Job closed", nil, err)
 }
 
 // Repost handles POST /recruiter/jobs/:id/repost.
@@ -163,7 +161,7 @@ func (h *RecruitingHandler) Close(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/jobs/{id}/repost [post]
 func (h *RecruitingHandler) Repost(ctx *gin.Context) {
 	err := h.service.Repost(ctx, ctx.GetString(userIDKey), ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Job reposted for another 30 days", nil, err)
+	respond(ctx, http.StatusOK, "Job reposted for another 30 days", nil, err)
 }
 
 // Mine handles GET /recruiter/jobs?status=active|closed|expired
@@ -179,7 +177,7 @@ func (h *RecruitingHandler) Repost(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/jobs [get]
 func (h *RecruitingHandler) Mine(ctx *gin.Context) {
 	result, err := h.service.Mine(ctx, ctx.GetString(userIDKey), ctx.Query("status"))
-	h.respond(ctx, http.StatusOK, "Jobs retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Jobs retrieved successfully", result, err)
 }
 
 // Detail handles GET /jobs/:id.
@@ -194,7 +192,7 @@ func (h *RecruitingHandler) Mine(ctx *gin.Context) {
 //	@Router		/api/v1/jobs/{id} [get]
 func (h *RecruitingHandler) Detail(ctx *gin.Context) {
 	result, err := h.service.Detail(ctx, ctx.Param("id"), ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Job retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Job retrieved successfully", result, err)
 }
 
 // Shared handles GET /jobs/share/:hash.
@@ -209,7 +207,7 @@ func (h *RecruitingHandler) Detail(ctx *gin.Context) {
 //	@Router		/api/v1/jobs/share/{hash} [get]
 func (h *RecruitingHandler) Shared(ctx *gin.Context) {
 	result, err := h.service.Shared(ctx, ctx.Param("hash"), ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Job retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Job retrieved successfully", result, err)
 }
 
 // Outbound handles POST /jobs/:id/outbound: an external-apply click.
@@ -225,7 +223,7 @@ func (h *RecruitingHandler) Shared(ctx *gin.Context) {
 //	@Router		/api/v1/jobs/{id}/outbound [post]
 func (h *RecruitingHandler) Outbound(ctx *gin.Context) {
 	err := h.service.Outbound(ctx, ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Click recorded", nil, err)
+	respond(ctx, http.StatusOK, "Click recorded", nil, err)
 }
 
 // Recruiter handles GET /recruiters/:id: a public recruiter card.
@@ -240,7 +238,7 @@ func (h *RecruitingHandler) Outbound(ctx *gin.Context) {
 //	@Router		/api/v1/recruiters/{id} [get]
 func (h *RecruitingHandler) Recruiter(ctx *gin.Context) {
 	person, open, err := h.service.Recruiter(ctx, ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Recruiter retrieved successfully", recruiterCard{Recruiter: person, OpenJobs: open}, err)
+	respond(ctx, http.StatusOK, "Recruiter retrieved successfully", recruiterCard{Recruiter: person, OpenJobs: open}, err)
 }
 
 // Drafts handles GET /recruiter/drafts.
@@ -255,7 +253,7 @@ func (h *RecruitingHandler) Recruiter(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/drafts [get]
 func (h *RecruitingHandler) Drafts(ctx *gin.Context) {
 	result, err := h.service.Drafts(ctx, ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Drafts retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Drafts retrieved successfully", result, err)
 }
 
 // SaveDraft handles POST /recruiter/drafts and PUT /recruiter/drafts/:id with {"form": {...}}.
@@ -273,11 +271,11 @@ func (h *RecruitingHandler) Drafts(ctx *gin.Context) {
 func (h *RecruitingHandler) SaveDraft(ctx *gin.Context) {
 	var body draftRequest
 	if err := ctx.ShouldBindJSON(&body); err != nil || body.Form == nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid draft"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid draft"))
 		return
 	}
 	result, err := h.service.SaveDraft(ctx, ctx.GetString(userIDKey), ctx.Param("id"), body.Form)
-	h.respond(ctx, http.StatusOK, "Draft saved", result, err)
+	respond(ctx, http.StatusOK, "Draft saved", result, err)
 }
 
 // OverwriteDraft handles PUT /recruiter/drafts/:id.
@@ -308,36 +306,5 @@ func (h *RecruitingHandler) OverwriteDraft(ctx *gin.Context) { h.SaveDraft(ctx) 
 //	@Router		/api/v1/recruiter/drafts/{id} [delete]
 func (h *RecruitingHandler) DeleteDraft(ctx *gin.Context) {
 	err := h.service.DeleteDraft(ctx, ctx.GetString(userIDKey), ctx.Param("id"))
-	h.respond(ctx, http.StatusOK, "Draft deleted", nil, err)
-}
-
-func (h *RecruitingHandler) respond(ctx *gin.Context, status int, message string, result any, err error) {
-	if err != nil {
-		switch {
-		case domainjobs.IsValidation(err):
-			h.fail(ctx, http.StatusBadRequest, err)
-		case domainjobs.IsNotFound(err):
-			h.fail(ctx, http.StatusNotFound, err)
-		case domainjobs.IsForbidden(err):
-			h.fail(ctx, http.StatusForbidden, err)
-		case domainjobs.IsPaymentRequired(err):
-			// The error is also the data: reason, fee and what's available.
-			ctx.JSON(http.StatusPaymentRequired, adapters.BuildErrorResponse("402 Payment Required", err, err))
-		case domainjobs.IsConflict(err):
-			h.fail(ctx, http.StatusConflict, err)
-		case domainpayments.IsUnavailable(err):
-			h.fail(ctx, http.StatusServiceUnavailable, err)
-		default:
-			ctx.Error(err)
-			h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-		}
-		return
-	}
-	// Job pages depend on the viewer (applied, manage rights, analytics).
-	ctx.Header("Cache-Control", "private, no-store")
-	ctx.JSON(status, adapters.BuildResponse(message, result, nil))
-}
-
-func (h *RecruitingHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
+	respond(ctx, http.StatusOK, "Draft deleted", nil, err)
 }

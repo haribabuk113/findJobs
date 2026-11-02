@@ -129,6 +129,24 @@ func (c *SessionCache) DeleteSession(ctx context.Context, sessionID string) (str
 	return refreshToken, nil
 }
 
+// DeleteUserSessions deletes the user's durable sessions, then tombstones each
+// one so a cached entry can't keep it alive.
+func (c *SessionCache) DeleteUserSessions(ctx context.Context, userID string) ([]auth.Session, error) {
+	sessions, err := c.store.DeleteUserSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
+	defer cancel()
+	for _, sess := range sessions {
+		if err := c.rdb.Set(rctx, cacheKey(sess.ID), tombstone, tombstoneTTL).Err(); err != nil {
+			warn(err, "session tombstone write failed")
+			break // Redis is down: so are its cached entries
+		}
+	}
+	return sessions, nil
+}
+
 func (c *SessionCache) invalidate(ctx context.Context, sessionID string) {
 	if uuid.Validate(sessionID) != nil {
 		return

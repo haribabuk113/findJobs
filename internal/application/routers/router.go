@@ -14,6 +14,7 @@ import (
 	"findJobs/internal/adapters/outbound/razorpay"
 	redisstore "findJobs/internal/adapters/outbound/redis"
 	"findJobs/internal/adapters/outbound/storage"
+	appaccount "findJobs/internal/application/account"
 	appauth "findJobs/internal/application/auth"
 	appcompanies "findJobs/internal/application/companies"
 	appjobs "findJobs/internal/application/jobs"
@@ -22,6 +23,7 @@ import (
 	apppayments "findJobs/internal/application/payments"
 	appreference "findJobs/internal/application/reference"
 	appsettings "findJobs/internal/application/settings"
+	domainaccount "findJobs/internal/domain/account"
 	"findJobs/internal/pkg/background"
 	"findJobs/internal/pkg/config"
 	"findJobs/internal/pkg/logger"
@@ -55,7 +57,8 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// ctx.Errors, the only place a 500's cause is kept); Recover runs inside it
 	// so a panic is logged as that request's 500.
 	router := gin.New()
-	router.Use(inbound.RequestLogger(logger.Get()), inbound.Recover())
+	metrics := inbound.NewMetrics(db.Stat)
+	router.Use(inbound.RequestLogger(logger.Get()), metrics.Middleware(), inbound.Recover())
 	// Make *gin.Context forward Done/Err/Deadline to the request context, so a
 	// client disconnect or the request deadline cancels the work in progress.
 	router.ContextWithFallback = true
@@ -70,6 +73,9 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// Gin attaches middleware only to routes registered after Use, so the
 	// probes registered here skip the rate limiter and the body guard.
 	inbound.RegisterHealthRoutes(router, db.Ping)
+	// Prometheus scrape target. Internal only, like the whole backend: it sits
+	// behind the SvelteKit server, whose proxies never forward /metrics.
+	router.GET("/metrics", metrics.Handler)
 	router.Use(inbound.RequestTimeout(cfg.Server.WriteTimeout), inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
 
 	api := router.Group("/api/v1")
@@ -82,10 +88,28 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	}
 	// Postgres is the durable session store; Redis caches session state in front of it.
 	sessions := redisstore.NewSessionCache(postgres.NewSessionStore(db, tokenKeys), rdb)
-	authService := appauth.NewAuthService(authRepo, sessions, iam.NewClient(cfg.IAM), cfg.Session.IdleTimeout)
+	iamClient := iam.NewClient(cfg.IAM)
+	authService := appauth.NewAuthService(authRepo, sessions, iamClient, cfg.Session.IdleTimeout)
 	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev", cfg.PlatformAdminIDs)
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
+	// Uploads (local disk until the Internxt S3 adapter is configured)
+	store, err := storage.NewLocal(cfg.StorageDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Account and legal: consents and account deletion. Every other signed-in
+	// route goes through the consent gate (requireUser below); these use the
+	// plain session check, so a user can always accept the documents, or leave.
+	legalDocs := make([]domainaccount.Document, len(cfg.LegalDocuments))
+	for i, d := range cfg.LegalDocuments {
+		legalDocs[i] = domainaccount.Document{ID: d.ID, Version: d.Version}
+	}
+	accountService := appaccount.NewAccountService(postgres.NewAccountRepository(db), sessions, iamClient, store, legalDocs)
+	inbound.RegisterAccountRoutes(api, inbound.NewAccountHandler(accountService), authHandler.RequireUser())
+	requireUser := authHandler.RequireConsentedUser(accountService.Gate)
+
 	// Daily at 03:30 IST (and at startup): delete expired and idle sessions.
 	scheduler.Daily(bg, db, "sessions-purge", 3, 30, postgres.PurgeSessions(db, cfg.Session.IdleTimeout))
 
@@ -99,7 +123,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 
 	// Job routes
 	jobsHandler := inbound.NewJobsHandler(appjobs.NewJobService(postgres.NewJobRepository(db), settingsRepo))
-	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser(), authHandler.RequireUser())
+	inbound.RegisterJobRoutes(api.Group("/jobs"), jobsHandler, authHandler.OptionalUser(), requireUser)
 
 	// Platform admin routes
 	settingsHandler := inbound.NewSettingsHandler(appsettings.NewSettingsService(settingsRepo))
@@ -117,7 +141,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 		gateway = razorpay.New(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 	}
 	paymentService := apppayments.NewPaymentService(postgres.NewWalletRepository(db), gateway)
-	inbound.RegisterPaymentRoutes(api, inbound.NewPaymentsHandler(paymentService), authHandler.RequireUser())
+	inbound.RegisterPaymentRoutes(api, inbound.NewPaymentsHandler(paymentService), requireUser)
 	if gateway != nil {
 		// Daily at 02:00 IST (and at startup): catch paid orders whose webhook never came, flag mismatches.
 		scheduler.Daily(bg, db, "payments-reconcile", 2, 0, paymentService.Reconcile)
@@ -126,15 +150,11 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// Recruiting: posting and managing jobs (paid posts charge through payments), job pages, recruiter cards
 	recruitingService := appjobs.NewRecruitingService(postgres.NewRecruitingRepository(db), referenceService,
 		settingsRepo, paymentService)
-	inbound.RegisterRecruitingRoutes(api, inbound.NewRecruitingHandler(recruitingService), authHandler.OptionalUser(), authHandler.RequireUser())
+	inbound.RegisterRecruitingRoutes(api, inbound.NewRecruitingHandler(recruitingService), authHandler.OptionalUser(), requireUser)
 
-	// Companies (uploads: local disk until the Internxt S3 adapter is configured)
-	store, err := storage.NewLocal(cfg.StorageDir)
-	if err != nil {
-		return nil, err
-	}
+	// Companies
 	companyService := appcompanies.NewCompanyService(postgres.NewCompanyRepository(db), store)
-	inbound.RegisterCompanyRoutes(api, inbound.NewCompanyHandler(companyService), authHandler.OptionalUser(), authHandler.RequireUser())
+	inbound.RegisterCompanyRoutes(api, inbound.NewCompanyHandler(companyService), authHandler.OptionalUser(), requireUser)
 
 	// Candidate profiles: shared taxonomy terms, company verification, photo uploads
 	profileService := appprofiles.NewProfileService(postgres.NewProfileRepository(db), referenceService, companyService, store)
@@ -144,11 +164,11 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	analyticsService := appprofiles.NewAnalyticsService(redisstore.NewProfileViewCounter(postgres.NewProfileAnalyticsRepository(db), rdb))
 	scheduler.Every(bg, db, "profile-views-flush", 5*time.Minute, analyticsService.Flush)
 	scheduler.Daily(bg, db, "profile-analytics-rollup", 0, 20, analyticsService.Rollup)
-	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService, analyticsService), authHandler.OptionalUser(), authHandler.RequireUser())
+	inbound.RegisterProfileRoutes(api, inbound.NewProfileHandler(profileService, analyticsService), authHandler.OptionalUser(), requireUser)
 
 	// Applications: Easy Apply with the daily free quota, external confirmations, applicant pipeline
 	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), settingsRepo)
-	inbound.RegisterApplicationRoutes(api, inbound.NewApplicationsHandler(applicationService), authHandler.RequireUser())
+	inbound.RegisterApplicationRoutes(api, inbound.NewApplicationsHandler(applicationService), requireUser)
 	return router, nil
 }
 

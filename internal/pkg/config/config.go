@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,15 @@ type Config struct {
 	// JobPostFeePaise is the paid job-post fee (₹2 by default). It comes from
 	// here for now, not the admin settings; 0 publishes paid posts free.
 	JobPostFeePaise int64
+	// LegalDocuments are the mandatory documents at their current versions,
+	// from LEGAL_DOCUMENTS ("terms:2026-11-02,privacy:2026-11-02,cookies:2026-11-02").
+	// A user must accept each current version to use the app; empty: no gate.
+	LegalDocuments []LegalDocument
+}
+
+// LegalDocument is one entry of LEGAL_DOCUMENTS.
+type LegalDocument struct {
+	ID, Version string
 }
 
 // RazorpayConfig is the payment gateway account. All three are set together,
@@ -120,7 +130,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Environment: os.Getenv("ENVIRONMENT"),
 		Server: ServerConfig{
-			Port:            l.str("SERVER_PORT", "8080"),
+			Port:            l.str("SERVER_PORT", "8081"),
 			Host:            l.str("SERVER_HOST", "0.0.0.0"),
 			ReadTimeout:     l.duration("SERVER_READ_TIMEOUT", 15*time.Second),
 			WriteTimeout:    l.duration("SERVER_WRITE_TIMEOUT", 15*time.Second),
@@ -168,6 +178,7 @@ func Load() (*Config, error) {
 			WebhookSecret: os.Getenv("RAZORPAY_WEBHOOK_SECRET"),
 		},
 		JobPostFeePaise: int64(l.int("JOB_POST_FEE_PAISE", 200)),
+		LegalDocuments:  l.legalDocuments("LEGAL_DOCUMENTS"),
 		Session: SessionConfig{
 			TokenEncKeys: os.Getenv("TOKEN_ENC_KEYS"),
 			IdleTimeout:  l.duration("SESSION_IDLE_TIMEOUT", 168*time.Hour),
@@ -262,6 +273,27 @@ func (l *loader) duration(key string, defaultValue time.Duration) time.Duration 
 }
 
 // getEnvList splits a comma-separated variable, dropping blanks.
+var (
+	legalDocID      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,29}$`)
+	legalDocVersion = regexp.MustCompile(`^[A-Za-z0-9._-]{1,40}$`)
+)
+
+// legalDocuments parses "id:version,..." (each id once).
+func (l *loader) legalDocuments(key string) []LegalDocument {
+	var docs []LegalDocument
+	seen := map[string]bool{}
+	for _, item := range getEnvList(key) {
+		id, version, _ := strings.Cut(item, ":")
+		if !legalDocID.MatchString(id) || !legalDocVersion.MatchString(version) || seen[id] {
+			l.errs = append(l.errs, fmt.Errorf("%s: %q must be a unique id:version, e.g. terms:2026-11-02", key, item))
+			continue
+		}
+		seen[id] = true
+		docs = append(docs, LegalDocument{ID: id, Version: version})
+	}
+	return docs
+}
+
 func getEnvList(key string) []string {
 	var list []string
 	for _, item := range strings.Split(os.Getenv(key), ",") {

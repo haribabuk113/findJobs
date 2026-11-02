@@ -5,8 +5,8 @@ FROM golang:1.27.3-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
+# git for modules fetched directly from VCS; no C toolchain (CGO is off)
+RUN apk add --no-cache git
 
 # Copy go mod files first (to leverage Docker cache)
 COPY go.mod go.sum ./
@@ -17,8 +17,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o findJobs ./cmd/main.go
+# Static binary without local paths or debug symbols
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o findJobs ./cmd/main.go
 
 ##
 ## Run stage
@@ -38,10 +38,10 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
     && mkdir -p /app/uploads && chown appuser:appgroup /app/uploads
 USER appuser
 
-EXPOSE 8080
+EXPOSE 8081
 
 # Liveness only: a DB outage should mark the app not-ready (/readyz), not get it restarted.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null "http://127.0.0.1:${SERVER_PORT:-8080}/healthz" || exit 1
+    CMD wget -q -O /dev/null "http://127.0.0.1:${SERVER_PORT:-8081}/healthz" || exit 1
 
 ENTRYPOINT ["/app/findJobs"]

@@ -59,7 +59,7 @@ type termUpdate struct {
 func (h *ReferenceHandler) Manifest(ctx *gin.Context) {
 	manifest, err := h.service.Manifest(ctx)
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	ctx.Header("Cache-Control", "public, max-age=60")
@@ -80,7 +80,7 @@ func (h *ReferenceHandler) Manifest(ctx *gin.Context) {
 func (h *ReferenceHandler) Asset(ctx *gin.Context) {
 	asset, err := h.service.Asset(ctx, ctx.Param("file"))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	ctx.Header("Cache-Control", "public, max-age=31536000, immutable")
@@ -105,17 +105,17 @@ func (h *ReferenceHandler) Asset(ctx *gin.Context) {
 func (h *ReferenceHandler) ListTerms(ctx *gin.Context) {
 	kind, err := domainreference.ParseKind(ctx.Param("kind"))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	page, err1 := optionalInt(ctx.Query("page"))
 	pageSize, err2 := optionalInt(ctx.Query("page_size"))
 	if err1 != nil || err2 != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("page and page_size must be whole numbers"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("page and page_size must be whole numbers"))
 		return
 	}
 	result, err := h.service.ListTerms(ctx, kind, ctx.Query("status"), page, pageSize)
-	h.respond(ctx, "Terms retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Terms retrieved successfully", result, err)
 }
 
 // MergeTerms handles POST /admin/taxonomy/:kind/merge {"source_ids": [..], "master_id": n}
@@ -134,16 +134,16 @@ func (h *ReferenceHandler) ListTerms(ctx *gin.Context) {
 func (h *ReferenceHandler) MergeTerms(ctx *gin.Context) {
 	kind, err := domainreference.ParseKind(ctx.Param("kind"))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	var body mergeRequest
 	if err := ctx.ShouldBindJSON(&body); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid merge request"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid merge request"))
 		return
 	}
 	err = h.service.MergeTerms(ctx, kind, body.SourceIDs, body.MasterID)
-	h.respond(ctx, "Terms merged successfully", nil, err)
+	respond(ctx, http.StatusOK, "Terms merged successfully", nil, err)
 }
 
 // UpdateTerm handles PATCH /admin/taxonomy/:kind/:id {"name"?: "", "status"?: "verified"|"pending"}
@@ -167,11 +167,11 @@ func (h *ReferenceHandler) UpdateTerm(ctx *gin.Context) {
 	}
 	var body termUpdate
 	if err := ctx.ShouldBindJSON(&body); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid update request"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid update request"))
 		return
 	}
 	term, err := h.service.UpdateTerm(ctx, kind, id, body.Name, body.Status)
-	h.respond(ctx, "Term updated successfully", term, err)
+	respond(ctx, http.StatusOK, "Term updated successfully", term, err)
 }
 
 // DeleteTerm handles DELETE /admin/taxonomy/:kind/:id
@@ -191,7 +191,7 @@ func (h *ReferenceHandler) DeleteTerm(ctx *gin.Context) {
 	if !ok {
 		return
 	}
-	h.respond(ctx, "Term deleted successfully", nil, h.service.DeleteTerm(ctx, kind, id))
+	respond(ctx, http.StatusOK, "Term deleted successfully", nil, h.service.DeleteTerm(ctx, kind, id))
 }
 
 // RefreshRates handles POST /admin/fx/refresh: starts a refresh in the
@@ -207,7 +207,7 @@ func (h *ReferenceHandler) DeleteTerm(ctx *gin.Context) {
 //	@Router		/api/v1/admin/fx/refresh [post]
 func (h *ReferenceHandler) RefreshRates(ctx *gin.Context) {
 	if !h.service.RefreshRatesAsync() {
-		h.fail(ctx, http.StatusConflict, fmt.Errorf("a refresh is already running"))
+		fail(ctx, http.StatusConflict, fmt.Errorf("a refresh is already running"))
 		return
 	}
 	ctx.JSON(http.StatusAccepted, adapters.BuildResponse("Exchange-rate refresh started; the manifest's rates entry updates when it finishes", nil, nil))
@@ -216,12 +216,12 @@ func (h *ReferenceHandler) RefreshRates(ctx *gin.Context) {
 func (h *ReferenceHandler) kindAndID(ctx *gin.Context) (domainreference.Kind, int64, bool) {
 	kind, err := domainreference.ParseKind(ctx.Param("kind"))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return "", 0, false
 	}
 	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("id must be a positive whole number"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("id must be a positive whole number"))
 		return "", 0, false
 	}
 	return kind, id, true
@@ -232,31 +232,4 @@ func optionalInt(s string) (int, error) {
 		return 0, nil
 	}
 	return strconv.Atoi(s)
-}
-
-func (h *ReferenceHandler) respond(ctx *gin.Context, message string, result any, err error) {
-	if err != nil {
-		h.failErr(ctx, err)
-		return
-	}
-	ctx.Header("Cache-Control", "no-store")
-	ctx.JSON(http.StatusOK, adapters.BuildResponse(message, result, nil))
-}
-
-func (h *ReferenceHandler) failErr(ctx *gin.Context, err error) {
-	switch {
-	case domainreference.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	case domainreference.IsNotFound(err):
-		h.fail(ctx, http.StatusNotFound, err)
-	case domainreference.IsConflict(err):
-		h.fail(ctx, http.StatusConflict, err)
-	default:
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *ReferenceHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
 }

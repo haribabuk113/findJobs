@@ -118,16 +118,18 @@ func (r *CompanyRepository) SlugTaken(ctx context.Context, slug string) (bool, e
 }
 
 func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCriteria) (*companies.SearchResult, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT id, slug, name, tagline, size, industries, hq_location_id, hq_country_code, logo_key, COUNT(*) OVER()
-		FROM companies
+	const from = `FROM companies
 		WHERE deleted_at IS NULL
 			AND ($1 = '' OR name ILIKE '%' || $1 || '%')
 			AND (cardinality($2::text[]) = 0 OR hq_country_code = ANY($2))
 			AND (cardinality($3::text[]) = 0 OR EXISTS (SELECT 1 FROM unnest(industries) i WHERE lower(i) = ANY($3)))
-			AND (cardinality($4::text[]) = 0 OR size = ANY($4))
+			AND (cardinality($4::text[]) = 0 OR size = ANY($4))`
+	filters := []any{escapeLike(c.Query), c.Countries, c.Industries, c.Sizes}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, slug, name, tagline, size, industries, hq_location_id, hq_country_code, logo_key, COUNT(*) OVER()
+		`+from+`
 		ORDER BY lower(name), id LIMIT $5 OFFSET $6`,
-		escapeLike(c.Query), c.Countries, c.Industries, c.Sizes, c.PageSize, (c.Page-1)*c.PageSize)
+		append(filters, c.PageSize, (c.Page-1)*c.PageSize)...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +145,14 @@ func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCrite
 		s.LogoURL = companies.FileURL(logo)
 		result.Companies = append(result.Companies, s)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Past the last page the window count has no row to ride on.
+	if len(result.Companies) == 0 && c.Page > 1 {
+		err = r.pool.QueryRow(ctx, `SELECT COUNT(*) `+from, filters...).Scan(&result.Total)
+	}
+	return result, err
 }
 
 func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (*companies.Company, error) {

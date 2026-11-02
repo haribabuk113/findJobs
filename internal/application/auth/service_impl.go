@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"findJobs/internal/domain/auth"
+	"findJobs/internal/pkg/logger"
 	"findJobs/internal/ports"
 )
 
@@ -78,10 +79,14 @@ func (s *service) Authenticate(ctx context.Context, sessionID string) (*auth.Ses
 	}
 	if now.Before(state.AccessExpiresAt) {
 		if now.Sub(state.LastSeenAt) > touchEvery {
+			// Best effort: a failed write only means the idle clock wasn't
+			// moved this time; the next request after touchEvery retries.
 			if err := s.sessions.Touch(ctx, sessionID); err != nil {
-				return nil, err
+				l := logger.Get()
+				l.Warn().Err(err).Msg("could not record session activity")
+			} else {
+				state.LastSeenAt = now
 			}
-			state.LastSeenAt = now
 		}
 		return state, nil
 	}

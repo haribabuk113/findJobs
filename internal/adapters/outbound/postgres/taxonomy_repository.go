@@ -52,9 +52,10 @@ func usage(kind reference.Kind) string {
 
 func (r *TaxonomyRepository) List(ctx context.Context, kind reference.Kind, status string, page, pageSize int) (*reference.TermPage, error) {
 	// ponytail: usage is counted per listed row (≤100); add a counter column if this gets slow.
+	from := `FROM ` + table(kind) + ` t
+		WHERE ($1 = '' AND t.status <> 'merged') OR t.status = $1`
 	query := `SELECT t.id, t.name, t.status, t.merged_into, t.created_at, ` + usage(kind) + `, COUNT(*) OVER()
-		FROM ` + table(kind) + ` t
-		WHERE ($1 = '' AND t.status <> 'merged') OR t.status = $1
+		` + from + `
 		ORDER BY t.created_at DESC, t.id DESC LIMIT $2 OFFSET $3`
 	rows, err := r.pool.Query(ctx, query, status, pageSize, (page-1)*pageSize)
 	if err != nil {
@@ -69,7 +70,14 @@ func (r *TaxonomyRepository) List(ctx context.Context, kind reference.Kind, stat
 		}
 		result.Terms = append(result.Terms, t)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Past the last page the window count has no row to ride on.
+	if len(result.Terms) == 0 && page > 1 {
+		err = r.pool.QueryRow(ctx, `SELECT COUNT(*) `+from, status).Scan(&result.Total)
+	}
+	return result, err
 }
 
 func (r *TaxonomyRepository) Resolve(ctx context.Context, kind reference.Kind, names []reference.CleanedName, userID string) ([]reference.Term, bool, error) {

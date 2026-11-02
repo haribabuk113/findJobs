@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"findJobs/internal/adapters"
 	appsettings "findJobs/internal/application/settings"
 	domainsettings "findJobs/internal/domain/settings"
 
@@ -42,10 +41,10 @@ func RegisterSettingsRoutes(api, admin *gin.RouterGroup, handler *SettingsHandle
 func (h *SettingsHandler) Public(ctx *gin.Context) {
 	result, err := h.service.Get(ctx)
 	if err != nil {
-		h.respond(ctx, "", nil, err)
+		respond(ctx, http.StatusOK, "", nil, err)
 		return
 	}
-	h.respond(ctx, "Settings retrieved successfully", result.Public(), nil)
+	respond(ctx, http.StatusOK, "Settings retrieved successfully", result.Public(), nil)
 }
 
 // Get handles GET /admin/settings
@@ -60,7 +59,7 @@ func (h *SettingsHandler) Public(ctx *gin.Context) {
 //	@Router		/api/v1/admin/settings [get]
 func (h *SettingsHandler) Get(ctx *gin.Context) {
 	result, err := h.service.Get(ctx)
-	h.respond(ctx, "Settings retrieved successfully", result, err)
+	respond(ctx, http.StatusOK, "Settings retrieved successfully", result, err)
 }
 
 // Update handles PUT /admin/settings with the full settings object.
@@ -78,26 +77,9 @@ func (h *SettingsHandler) Get(ctx *gin.Context) {
 func (h *SettingsHandler) Update(ctx *gin.Context) {
 	var values domainsettings.Settings
 	if err := ctx.ShouldBindJSON(&values); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid settings request"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid settings request"))
 		return
 	}
 	result, err := h.service.Update(ctx, &values, ctx.GetString(userIDKey))
-	h.respond(ctx, "Settings updated successfully", result, err)
-}
-
-func (h *SettingsHandler) respond(ctx *gin.Context, message string, result any, err error) {
-	ctx.Header("Cache-Control", "no-store")
-	switch {
-	case err == nil:
-		ctx.JSON(http.StatusOK, adapters.BuildResponse(message, result, nil))
-	case domainsettings.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	default:
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *SettingsHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
+	respond(ctx, http.StatusOK, "Settings updated successfully", result, err)
 }

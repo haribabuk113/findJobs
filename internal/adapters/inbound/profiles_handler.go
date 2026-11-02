@@ -7,11 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"findJobs/internal/adapters"
 	appprofiles "findJobs/internal/application/profiles"
-	domaincompanies "findJobs/internal/domain/companies"
 	domainprofiles "findJobs/internal/domain/profiles"
-	domainreference "findJobs/internal/domain/reference"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,7 +60,7 @@ type skillRequest struct {
 //	@Router		/api/v1/profile/me/skills [get]
 func (h *ProfileHandler) Skills(ctx *gin.Context) {
 	set, err := h.service.Skills(ctx, ctx.GetString(userIDKey), ctx.Query("signature"))
-	h.respond(ctx, http.StatusOK, "Skills retrieved successfully", set, err)
+	respond(ctx, http.StatusOK, "Skills retrieved successfully", set, err)
 }
 
 // AddSkill handles POST /profile/me/skills with {"skill_id": n}.
@@ -81,11 +78,11 @@ func (h *ProfileHandler) Skills(ctx *gin.Context) {
 func (h *ProfileHandler) AddSkill(ctx *gin.Context) {
 	var in skillRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil || in.SkillID <= 0 {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("give a skill_id"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("give a skill_id"))
 		return
 	}
 	set, err := h.service.AddSkill(ctx, ctx.GetString(userIDKey), in.SkillID)
-	h.respond(ctx, http.StatusOK, "Skill added", set, err)
+	respond(ctx, http.StatusOK, "Skill added", set, err)
 }
 
 // RemoveSkill handles DELETE /profile/me/skills/:id.
@@ -102,11 +99,11 @@ func (h *ProfileHandler) AddSkill(ctx *gin.Context) {
 func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
 	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
 	if err != nil || id <= 0 {
-		h.fail(ctx, http.StatusNotFound, fmt.Errorf("skill not found"))
+		fail(ctx, http.StatusNotFound, fmt.Errorf("skill not found"))
 		return
 	}
 	set, err := h.service.RemoveSkill(ctx, ctx.GetString(userIDKey), id)
-	h.respond(ctx, http.StatusOK, "Skill removed", set, err)
+	respond(ctx, http.StatusOK, "Skill removed", set, err)
 }
 
 // Mine handles GET /profile/me (a starter with saved=false before the first save).
@@ -121,7 +118,7 @@ func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
 //	@Router		/api/v1/profile/me [get]
 func (h *ProfileHandler) Mine(ctx *gin.Context) {
 	p, err := h.service.Mine(ctx, ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
+	respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
 }
 
 // Save handles PUT /profile/me: the whole profile document.
@@ -139,11 +136,11 @@ func (h *ProfileHandler) Mine(ctx *gin.Context) {
 func (h *ProfileHandler) Save(ctx *gin.Context) {
 	var in domainprofiles.Profile
 	if err := ctx.ShouldBindJSON(&in); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid profile"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid profile"))
 		return
 	}
 	p, err := h.service.Save(ctx, ctx.GetString(userIDKey), &in)
-	h.respond(ctx, http.StatusOK, "Profile saved successfully", p, err)
+	respond(ctx, http.StatusOK, "Profile saved successfully", p, err)
 }
 
 // Photo handles PUT /profile/me/photo with a raw image body.
@@ -162,15 +159,15 @@ func (h *ProfileHandler) Photo(ctx *gin.Context) {
 	data, err := io.ReadAll(ctx.Request.Body)
 	var tooBig *http.MaxBytesError
 	if errors.As(err, &tooBig) || len(data) > appprofiles.MaxPhotoBytes {
-		h.fail(ctx, http.StatusRequestEntityTooLarge, fmt.Errorf("the photo is too large"))
+		fail(ctx, http.StatusRequestEntityTooLarge, fmt.Errorf("the photo is too large"))
 		return
 	}
 	if err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("could not read the upload"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("could not read the upload"))
 		return
 	}
 	p, err := h.service.SetPhoto(ctx, ctx.GetString(userIDKey), ctx.ContentType(), data)
-	h.respond(ctx, http.StatusOK, "Photo updated successfully", p, err)
+	respond(ctx, http.StatusOK, "Photo updated successfully", p, err)
 }
 
 // DeletePhoto handles DELETE /profile/me/photo. Idempotent: without a photo it returns the profile unchanged.
@@ -185,7 +182,7 @@ func (h *ProfileHandler) Photo(ctx *gin.Context) {
 //	@Router		/api/v1/profile/me/photo [delete]
 func (h *ProfileHandler) DeletePhoto(ctx *gin.Context) {
 	p, err := h.service.DeletePhoto(ctx, ctx.GetString(userIDKey))
-	h.respond(ctx, http.StatusOK, "Photo removed successfully", p, err)
+	respond(ctx, http.StatusOK, "Photo removed successfully", p, err)
 }
 
 // RequestVerification handles POST /profile/me/experiences/:index/verification.
@@ -202,11 +199,11 @@ func (h *ProfileHandler) DeletePhoto(ctx *gin.Context) {
 func (h *ProfileHandler) RequestVerification(ctx *gin.Context) {
 	index, err := strconv.Atoi(ctx.Param("index"))
 	if err != nil || index < 0 || index >= domainprofiles.MaxExperiences {
-		h.fail(ctx, http.StatusNotFound, fmt.Errorf("experience not found"))
+		fail(ctx, http.StatusNotFound, fmt.Errorf("experience not found"))
 		return
 	}
 	p, err := h.service.RequestVerification(ctx, ctx.GetString(userIDKey), index)
-	h.respond(ctx, http.StatusOK, "Verification requested", p, err)
+	respond(ctx, http.StatusOK, "Verification requested", p, err)
 }
 
 // Public handles GET /profiles/:slug?src=search|direct (404 when missing or
@@ -228,7 +225,7 @@ func (h *ProfileHandler) Public(ctx *gin.Context) {
 	if err == nil {
 		h.analytics.RecordView(ctx, p.OwnerID, ctx.GetString(userIDKey), ctx.Query("src"), ctx.GetHeader("User-Agent"))
 	}
-	h.respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
+	respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
 }
 
 // Analytics handles GET /profiles/:slug/analytics: the public Activity &
@@ -244,33 +241,5 @@ func (h *ProfileHandler) Public(ctx *gin.Context) {
 //	@Router		/api/v1/profiles/{slug}/analytics [get]
 func (h *ProfileHandler) Analytics(ctx *gin.Context) {
 	a, err := h.analytics.Analytics(ctx, ctx.Param("slug"))
-	h.respond(ctx, http.StatusOK, "Profile analytics retrieved successfully", a, err)
-}
-
-func (h *ProfileHandler) respond(ctx *gin.Context, status int, message string, result any, err error) {
-	if err != nil {
-		h.failErr(ctx, err)
-		return
-	}
-	// Owner data, or a page whose privacy can change any moment: never share-cache.
-	ctx.Header("Cache-Control", "private, no-store")
-	ctx.JSON(status, adapters.BuildResponse(message, result, nil))
-}
-
-func (h *ProfileHandler) failErr(ctx *gin.Context, err error) {
-	switch {
-	case domainprofiles.IsValidation(err), domainreference.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	case domainprofiles.IsNotFound(err), domaincompanies.IsNotFound(err):
-		h.fail(ctx, http.StatusNotFound, err)
-	case domainprofiles.IsConflict(err):
-		h.fail(ctx, http.StatusConflict, err)
-	default:
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *ProfileHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
+	respond(ctx, http.StatusOK, "Profile analytics retrieved successfully", a, err)
 }

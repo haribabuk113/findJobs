@@ -7,6 +7,49 @@
     },
     "basePath": "/",
     "paths": {
+        "/api/v1/account": {
+            "delete": {
+                "security": [
+                    {
+                        "sessionCookie": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account"
+                ],
+                "summary": "Delete your Referise account",
+                "operationId": "deleteAccount",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "409: the only admin of a company",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "409: the only admin of a company",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "409: the only admin of a company",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/fx/refresh": {
             "post": {
                 "security": [
@@ -2577,6 +2620,130 @@
                     },
                     "503": {
                         "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/consents": {
+            "post": {
+                "security": [
+                    {
+                        "sessionCookie": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account"
+                ],
+                "summary": "Accept or withdraw a legal document",
+                "operationId": "recordConsent",
+                "parameters": [
+                    {
+                        "description": "Document, its current version, and accepted (default) or withdrawn",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/inbound.consentRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "What is still required",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/adapters.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/account.Required"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/consents/required": {
+            "get": {
+                "security": [
+                    {
+                        "sessionCookie": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account"
+                ],
+                "summary": "Legal documents the user still has to accept",
+                "operationId": "getRequiredConsents",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/adapters.Response"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/account.Required"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/adapters.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/adapters.Response"
                         }
@@ -5175,6 +5342,20 @@
         }
     },
     "definitions": {
+        "account.Required": {
+            "type": "object",
+            "properties": {
+                "accepted_version": {
+                    "type": "string"
+                },
+                "doc_id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
         "adapters.Response": {
             "type": "object",
             "properties": {
@@ -5879,6 +6060,21 @@
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "inbound.consentRequest": {
+            "type": "object",
+            "properties": {
+                "doc_id": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status is accepted (the default) or withdrawn.",
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },

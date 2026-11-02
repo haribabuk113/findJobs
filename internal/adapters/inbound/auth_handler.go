@@ -1,8 +1,10 @@
 package inbound
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"findJobs/internal/adapters"
 	appauth "findJobs/internal/application/auth"
@@ -60,17 +62,19 @@ func (h *AuthHandler) CreateSession(ctx *gin.Context) {
 	// JSONBody (router-wide) already rejected non-JSON: blocks login CSRF.
 	var request domainauth.SessionRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		h.fail(ctx, http.StatusBadRequest, domainauth.ErrCodeRequired)
+		fail(ctx, http.StatusBadRequest, domainauth.ErrCodeRequired)
 		return
 	}
 
 	sessionID, result, err := h.service.CreateSession(ctx, &request)
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 
-	h.setCookie(ctx, sessionID, 1*24*3600) // D*H*S
+	// The cookie lives as long as the session can (its absolute end, IAM's 30
+	// days); the idle timeout is enforced server-side on every request.
+	h.setCookie(ctx, sessionID, int(time.Until(result.ExpiresAt).Seconds()))
 	ctx.JSON(http.StatusOK, adapters.BuildResponse("Session created successfully", result, nil))
 }
 
@@ -115,7 +119,7 @@ func (h *AuthHandler) AccessToken(ctx *gin.Context) {
 func (h *AuthHandler) withSession(ctx *gin.Context, message string, fn func(sessionID string) (any, error)) {
 	sessionID, _ := ctx.Cookie(sessionCookie)
 	if sessionID == "" {
-		h.fail(ctx, http.StatusUnauthorized, domainauth.ErrUnauthorized)
+		fail(ctx, http.StatusUnauthorized, domainauth.ErrUnauthorized)
 		return
 	}
 
@@ -124,7 +128,7 @@ func (h *AuthHandler) withSession(ctx *gin.Context, message string, fn func(sess
 		if domainauth.IsUnauthorized(err) {
 			h.setCookie(ctx, "", -1)
 		}
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 
@@ -146,7 +150,7 @@ func (h *AuthHandler) Logout(ctx *gin.Context) {
 	h.setCookie(ctx, "", -1)
 	if sessionID != "" {
 		if err := h.service.Logout(ctx, sessionID); err != nil {
-			h.failErr(ctx, err)
+			failErr(ctx, err)
 			return
 		}
 	}
@@ -177,6 +181,25 @@ func (h *AuthHandler) RequireUser() gin.HandlerFunc {
 	}
 }
 
+// RequireConsentedUser is RequireUser plus the consent gate: while the user
+// hasn't accepted the current legal documents it answers 403 with the list in
+// data.required_documents. The consent and account-deletion routes use plain
+// RequireUser, so a user can always accept, or leave.
+func (h *AuthHandler) RequireConsentedUser(gate func(ctx context.Context, userID string) error) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		state := h.requireUser(ctx)
+		if state == nil {
+			return
+		}
+		if err := gate(ctx, state.UserID); err != nil {
+			failErr(ctx, err) // ConsentRequiredError: 403 with data.required_documents
+			ctx.Abort()
+			return
+		}
+		ctx.Next()
+	}
+}
+
 // RequirePlatformAdmin is RequireUser plus a PLATFORM_ADMIN_IDS check (403).
 // One middleware, so the admin check can never run without the session check.
 func (h *AuthHandler) RequirePlatformAdmin() gin.HandlerFunc {
@@ -186,7 +209,7 @@ func (h *AuthHandler) RequirePlatformAdmin() gin.HandlerFunc {
 			return
 		}
 		if !h.platformAdmins[state.IAMUserID] {
-			h.fail(ctx, http.StatusForbidden, fmt.Errorf("not allowed"))
+			fail(ctx, http.StatusForbidden, fmt.Errorf("not allowed"))
 			ctx.Abort()
 			return
 		}
@@ -198,7 +221,7 @@ func (h *AuthHandler) RequirePlatformAdmin() gin.HandlerFunc {
 func (h *AuthHandler) requireUser(ctx *gin.Context) *domainauth.SessionState {
 	sessionID, _ := ctx.Cookie(sessionCookie)
 	if sessionID == "" {
-		h.fail(ctx, http.StatusUnauthorized, domainauth.ErrUnauthorized)
+		fail(ctx, http.StatusUnauthorized, domainauth.ErrUnauthorized)
 		ctx.Abort()
 		return nil
 	}
@@ -207,7 +230,7 @@ func (h *AuthHandler) requireUser(ctx *gin.Context) *domainauth.SessionState {
 		if domainauth.IsUnauthorized(err) {
 			h.setCookie(ctx, "", -1)
 		}
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		ctx.Abort()
 		return nil
 	}
@@ -218,23 +241,4 @@ func (h *AuthHandler) requireUser(ctx *gin.Context) *domainauth.SessionState {
 func (h *AuthHandler) setCookie(ctx *gin.Context, value string, maxAge int) {
 	ctx.SetSameSite(http.SameSiteLaxMode)
 	ctx.SetCookie(sessionCookie, value, maxAge, "/", "", h.secureCookie, true)
-}
-
-func (h *AuthHandler) failErr(ctx *gin.Context, err error) {
-	switch {
-	case domainauth.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	case domainauth.IsUnauthorized(err):
-		h.fail(ctx, http.StatusUnauthorized, err)
-	case domainauth.IsNotFound(err):
-		h.fail(ctx, http.StatusNotFound, err)
-	default:
-		// Never leak internals (DB/IAM errors) to the client.
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *AuthHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
 }

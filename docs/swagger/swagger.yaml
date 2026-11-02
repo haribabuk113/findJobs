@@ -1,5 +1,14 @@
 basePath: /
 definitions:
+  account.Required:
+    properties:
+      accepted_version:
+        type: string
+      doc_id:
+        type: string
+      version:
+        type: string
+    type: object
   adapters.Response:
     properties:
       data: {}
@@ -478,6 +487,16 @@ definitions:
         items:
           type: string
         type: array
+    type: object
+  inbound.consentRequest:
+    properties:
+      doc_id:
+        type: string
+      status:
+        description: Status is accepted (the default) or withdrawn.
+        type: string
+      version:
+        type: string
     type: object
   inbound.draftRequest:
     properties:
@@ -1496,6 +1515,33 @@ info:
   title: Referise Backend API
   version: 1.1.0
 paths:
+  /api/v1/account:
+    delete:
+      operationId: deleteAccount
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: '409: the only admin of a company'
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "409":
+          description: '409: the only admin of a company'
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: '409: the only admin of a company'
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Delete your Referise account
+      tags:
+      - account
   /api/v1/admin/fx/refresh:
     post:
       operationId: refreshRates
@@ -3082,6 +3128,79 @@ paths:
       summary: Is a company slug free?
       tags:
       - companies
+  /api/v1/consents:
+    post:
+      consumes:
+      - application/json
+      operationId: recordConsent
+      parameters:
+      - description: Document, its current version, and accepted (default) or withdrawn
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/inbound.consentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: What is still required
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/account.Required'
+                  type: array
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Accept or withdraw a legal document
+      tags:
+      - account
+  /api/v1/consents/required:
+    get:
+      operationId: getRequiredConsents
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/adapters.Response'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/account.Required'
+                  type: array
+              type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/adapters.Response'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/adapters.Response'
+      security:
+      - sessionCookie: []
+      summary: Legal documents the user still has to accept
+      tags:
+      - account
   /api/v1/files/img/{name}:
     get:
       operationId: getImage

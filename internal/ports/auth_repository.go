@@ -33,6 +33,10 @@ type SessionStore interface {
 	// DeleteSession deletes a session and returns its IAM refresh token
 	// ("" if it didn't exist)
 	DeleteSession(ctx context.Context, sessionID string) (string, error)
+	// DeleteUserSessions deletes every session of the user and returns them
+	// with their IAM refresh tokens (for revocation); RefreshToken is "" when
+	// it couldn't be decrypted.
+	DeleteUserSessions(ctx context.Context, userID string) ([]auth.Session, error)
 }
 
 // IAMClient defines the outbound port to the central IAM service.

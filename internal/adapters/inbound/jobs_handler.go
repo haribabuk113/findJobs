@@ -48,12 +48,12 @@ type unlockRequest struct {
 func (h *JobsHandler) Unlock(ctx *gin.Context) {
 	var in unlockRequest
 	if err := ctx.ShouldBindJSON(&in); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid unlock request"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid unlock request"))
 		return
 	}
 	result, err := h.service.Unlock(ctx, &in.Criteria, ctx.GetString(userIDKey))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 	ctx.Header("Cache-Control", "private, no-store")
@@ -75,34 +75,17 @@ func (h *JobsHandler) Unlock(ctx *gin.Context) {
 func (h *JobsHandler) Search(ctx *gin.Context) {
 	var criteria domainjobs.SearchCriteria
 	if err := ctx.ShouldBindJSON(&criteria); err != nil {
-		h.fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid search request"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid search request"))
 		return
 	}
 
 	result, err := h.service.Search(ctx, &criteria, ctx.GetString(userIDKey))
 	if err != nil {
-		h.failErr(ctx, err)
+		failErr(ctx, err)
 		return
 	}
 
 	// Results depend on the viewer (applied-jobs exclusion): never share-cache.
 	ctx.Header("Cache-Control", "private, no-store")
 	ctx.JSON(http.StatusOK, adapters.BuildResponse("Jobs retrieved successfully", result, nil))
-}
-
-func (h *JobsHandler) failErr(ctx *gin.Context, err error) {
-	switch {
-	case domainjobs.IsValidation(err):
-		h.fail(ctx, http.StatusBadRequest, err)
-	case domainjobs.IsPaymentRequired(err):
-		// The error is also the data: reason, fee and balance for the unlock modal.
-		ctx.JSON(http.StatusPaymentRequired, adapters.BuildErrorResponse("402 Payment Required", err, err))
-	default:
-		ctx.Error(err)
-		h.fail(ctx, http.StatusInternalServerError, fmt.Errorf("internal error"))
-	}
-}
-
-func (h *JobsHandler) fail(ctx *gin.Context, status int, err error) {
-	ctx.JSON(status, adapters.BuildErrorResponse(fmt.Sprintf("%d %s", status, http.StatusText(status)), nil, err))
 }

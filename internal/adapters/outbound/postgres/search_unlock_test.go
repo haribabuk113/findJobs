@@ -88,6 +88,13 @@ func TestMatchSortUnlock(t *testing.T) {
 	if want := []string{full.ID, half.ID, none.ID}; !slices.Equal(got, want) {
 		t.Fatalf("match order %v, want %v", got, want)
 	}
+	// A page past the end still reports the total (the match sort's own
+	// argument must not reach the fallback count).
+	past := c
+	past.Page = 9
+	if res, err := repo.Search(ctx, &past, viewer); err != nil || len(res.Jobs) != 0 || res.Total != 3 {
+		t.Fatalf("past the end: %+v %v", res, err)
+	}
 }
 
 func isJobsPayment(err error, reason string, balance int64) bool {

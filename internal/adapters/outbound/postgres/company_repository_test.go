@@ -138,6 +138,10 @@ func TestCompanyLifecycleAndMemberRules(t *testing.T) {
 	if err != nil || res.Total != 1 || res.Companies[0].Slug != slug {
 		t.Errorf("search: %+v, %v", res, err)
 	}
+	if res, err := repo.Search(ctx, &companies.SearchCriteria{Query: in.Name, Countries: []string{"IN"}, Industries: []string{"testing"},
+		Sizes: []string{"11–50 people"}, Page: 4, PageSize: 5}); err != nil || res.Total != 1 || len(res.Companies) != 0 {
+		t.Errorf("past the end: %+v, %v", res, err)
+	}
 	if res, _ := repo.Search(ctx, &companies.SearchCriteria{Query: "%", Countries: []string{}, Industries: []string{}, Sizes: []string{}, Page: 1, PageSize: 5}); res.Total != 0 {
 		t.Errorf("'%%' must be literal, matched %d", res.Total)
 	}
