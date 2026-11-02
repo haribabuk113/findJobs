@@ -240,7 +240,7 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (string, error) {
 	var old *string
 	err := r.pool.QueryRow(ctx, `
-		UPDATE profiles p SET photo_key = $2, updated_at = NOW() FROM profiles prev
+		UPDATE profiles p SET photo_key = NULLIF($2, ''), updated_at = NOW() FROM profiles prev
 		WHERE p.user_id = $1 AND prev.user_id = p.user_id RETURNING prev.photo_key`, userID, key).Scan(&old)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", profiles.ErrNotFound

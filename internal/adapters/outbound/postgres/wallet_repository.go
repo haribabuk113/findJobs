@@ -172,6 +172,19 @@ func (r *WalletRepository) UnledgeredTopups(ctx context.Context, since time.Time
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
+func (r *WalletRepository) DuplicateJobPayments(ctx context.Context, since time.Time) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT p.gateway_order_id FROM payments p
+		WHERE p.purpose = 'job_post' AND p.status = 'paid' AND p.paid_at >= $1 AND EXISTS (
+			SELECT 1 FROM payments q WHERE q.job_id = p.job_id AND q.status = 'paid' AND q.id <> p.id
+				AND (q.paid_at, q.id) < (p.paid_at, p.id))
+		ORDER BY p.paid_at`, since)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
 type queryRower interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -233,10 +246,9 @@ func chargeCompanyPost(ctx context.Context, tx pgx.Tx, companyID, userID, jobID 
 	if err != nil {
 		return err
 	}
-	switch role {
-	case companies.RoleEmployee:
-		return &jobs.ForbiddenError{Message: "only company admins and HR can spend company credits"}
-	case companies.RoleHR:
+	// Admins spend without a cap. HR and employees spend within the limit an
+	// admin assigned them (manual "Company employees": credits for any active employee).
+	if role != companies.RoleAdmin {
 		var remaining int64
 		err := tx.QueryRow(ctx, `
 			UPDATE company_members m SET spent_paise = `+spentNow+` + $3, spent_month = `+capMonth+`, updated_at = NOW()

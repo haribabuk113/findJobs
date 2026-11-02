@@ -34,6 +34,7 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser
 	me.GET("", h.Mine)
 	me.PUT("", h.Save)
 	me.PUT("/photo", h.Photo)
+	me.DELETE("/photo", h.DeletePhoto)
 	me.POST("/experiences/:index/verification", h.RequestVerification)
 	me.GET("/skills", h.Skills)
 	me.POST("/skills", h.AddSkill)
@@ -170,6 +171,21 @@ func (h *ProfileHandler) Photo(ctx *gin.Context) {
 	}
 	p, err := h.service.SetPhoto(ctx, ctx.GetString(userIDKey), ctx.ContentType(), data)
 	h.respond(ctx, http.StatusOK, "Photo updated successfully", p, err)
+}
+
+// DeletePhoto handles DELETE /profile/me/photo. Idempotent: without a photo it returns the profile unchanged.
+//
+//	@Summary	Remove the profile photo
+//	@ID			deleteMyPhoto
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/photo [delete]
+func (h *ProfileHandler) DeletePhoto(ctx *gin.Context) {
+	p, err := h.service.DeletePhoto(ctx, ctx.GetString(userIDKey))
+	h.respond(ctx, http.StatusOK, "Photo removed successfully", p, err)
 }
 
 // RequestVerification handles POST /profile/me/experiences/:index/verification.

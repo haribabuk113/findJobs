@@ -2661,7 +2661,7 @@ paths:
         name: slug
         required: true
         type: string
-      - description: Member user id (a current HR member)
+      - description: Member user id (a current HR member or employee)
         in: path
         name: user_id
         required: true
@@ -2701,7 +2701,7 @@ paths:
             $ref: '#/definitions/adapters.Response'
       security:
       - sessionCookie: []
-      summary: Set an HR member's company-credit spending limit
+      summary: Set a member's company-credit spending limit (HR or employee)
       tags:
       - companies
   /api/v1/companies/{slug}/members/{user_id}/approve:

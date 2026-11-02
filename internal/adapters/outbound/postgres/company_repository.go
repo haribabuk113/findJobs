@@ -320,7 +320,7 @@ func (r *CompanyRepository) Dashboard(ctx context.Context, slug, userID string) 
 				(SELECT COALESCE(SUM(-l.amount_paise), 0) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
 					WHERE w.company_id = $1 AND l.kind = 'job_post'
 					AND l.created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'),
-				COALESCE(SUM(limit_paise) FILTER (WHERE status = 'current' AND role = 'hr'), 0)
+				COALESCE(SUM(limit_paise) FILTER (WHERE status = 'current' AND role <> 'admin'), 0)
 			FROM company_members WHERE company_id = $1`, companyID).
 			Scan(&d.TotalJobs, &d.ActiveJobs, &d.Applications, &d.Admins, &d.HR, &d.Employees, &d.PendingRequests,
 				&d.SpentThisMonthPaise, &d.TotalCapsPaise)
@@ -402,9 +402,9 @@ func endMembership(ctx context.Context, tx pgx.Tx, companyID, userID, lastAdminM
 func (r *CompanyRepository) SetAllowance(ctx context.Context, slug, adminID, memberID string, a companies.Allowance) error {
 	return r.asAdmin(ctx, slug, adminID, func(tx pgx.Tx, companyID string) error {
 		tag, err := tx.Exec(ctx, `UPDATE company_members SET cap_type = $3, limit_paise = $4, updated_at = NOW()
-			WHERE company_id = $1 AND user_id = $2 AND status = 'current' AND role = 'hr'`, companyID, memberID, a.CapType, a.LimitPaise)
+			WHERE company_id = $1 AND user_id = $2 AND status = 'current' AND role <> 'admin'`, companyID, memberID, a.CapType, a.LimitPaise)
 		if err == nil && tag.RowsAffected() == 0 {
-			return &companies.NotFoundError{Message: "spending limits apply to current HR members only"}
+			return &companies.NotFoundError{Message: "spending limits apply to current HR members and employees (admins have no limit)"}
 		}
 		return err
 	})

@@ -2,7 +2,11 @@ package postgres
 
 import (
 	"context"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -42,7 +46,7 @@ func TestPaidJobPosts(t *testing.T) {
 	}
 	cleanupWallets(t, pool, admin)
 	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM payments WHERE user_id = $1`, admin) })
-	if _, err := pool.Exec(ctx, `INSERT INTO wallets (company_id, balance_paise) VALUES ($1, 1500)`, companyID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO wallets (company_id, balance_paise) VALUES ($1, 2500)`, companyID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,9 +71,22 @@ func TestPaidJobPosts(t *testing.T) {
 		return n == 1
 	}
 
-	// Employees can't spend company credits; HR starts with a ₹0 limit.
-	if rec, err := post(employee, credits); !jobs.IsForbidden(err) || jobExists(rec) {
-		t.Fatalf("employee: %v", err)
+	// Employees start at ₹0 (manual: they post out of pocket); with credits
+	// assigned they post from the company wallet like HR.
+	if rec, err := post(employee, credits); !payReason(err, jobs.ReasonAllowanceExceeded, 0) || jobExists(rec) {
+		t.Fatalf("employee without credits: %v", err)
+	}
+	if err := companyRepo.SetAllowance(ctx, slug, admin, employee, companies.Allowance{CapType: "total", LimitPaise: 500}); err != nil {
+		t.Fatal(err)
+	}
+	if err := companyRepo.SetAllowance(ctx, slug, admin, admin, companies.Allowance{CapType: "total", LimitPaise: 500}); !companies.IsNotFound(err) {
+		t.Fatalf("a limit on an admin: %v", err)
+	}
+	if _, err := post(employee, credits); err != nil || balance() != 2000 {
+		t.Fatalf("employee with credits: %v, balance %d", err, balance())
+	}
+	if _, err := post(employee, credits); !payReason(err, jobs.ReasonAllowanceExceeded, 0) {
+		t.Fatalf("employee's total limit used up: %v", err)
 	}
 	if _, err := post(hr, credits); !payReason(err, jobs.ReasonAllowanceExceeded, 0) {
 		t.Fatalf("HR without a limit: %v", err)
@@ -81,15 +98,38 @@ func TestPaidJobPosts(t *testing.T) {
 	if err := companyRepo.SetAllowance(ctx, slug, hr, hr, companies.Allowance{CapType: "monthly", LimitPaise: 99999}); err != companies.ErrNotAdmin {
 		t.Fatalf("HR raising their own limit: %v", err)
 	}
-	if _, err := post(hr, credits); err != nil || balance() != 1000 {
+	if _, err := post(hr, credits); err != nil || balance() != 1500 {
 		t.Fatalf("HR within the limit: %v, balance %d", err, balance())
 	}
-	if _, err := post(hr, credits); !payReason(err, jobs.ReasonAllowanceExceeded, 100) || balance() != 1000 {
+	if _, err := post(hr, credits); !payReason(err, jobs.ReasonAllowanceExceeded, 100) || balance() != 1500 {
 		t.Fatalf("HR over the limit: %v, balance %d", err, balance())
 	}
 	poster, _ := repo.PosterCompanies(ctx, hr)
 	if len(poster) != 1 || poster[0].CreditsAllowancePaise == nil || *poster[0].CreditsAllowancePaise != 100 {
 		t.Fatalf("HR's remaining allowance: %+v", poster)
+	}
+	// 6 parallel posts with room for one more (₹6 left of ₹11): the member-row
+	// lock lets exactly one through, and only that one is charged.
+	if err := companyRepo.SetAllowance(ctx, slug, admin, hr, companies.Allowance{CapType: "monthly", LimitPaise: 1100}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var posted, refused atomic.Int32
+	for range 6 {
+		wg.Go(func() {
+			switch _, err := post(hr, credits); {
+			case err == nil:
+				posted.Add(1)
+			case payReason(err, jobs.ReasonAllowanceExceeded, 100):
+				refused.Add(1)
+			default:
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if posted.Load() != 1 || refused.Load() != 5 || balance() != 1000 {
+		t.Fatalf("parallel HR posts: %d posted, %d refused, balance %d", posted.Load(), refused.Load(), balance())
 	}
 	// Admins have no cap, only the balance.
 	for range 2 {
@@ -103,11 +143,11 @@ func TestPaidJobPosts(t *testing.T) {
 	var debits int
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM wallet_ledger l JOIN wallets w ON w.id = l.wallet_id
 		WHERE w.company_id = $1 AND l.kind = 'job_post' AND l.amount_paise = -500`, companyID).Scan(&debits)
-	if debits != 3 {
-		t.Fatalf("job_post ledger rows: %d, want 3", debits)
+	if debits != 5 {
+		t.Fatalf("job_post ledger rows: %d, want 5", debits)
 	}
-	// Dashboard money: 3 × ₹5 posts this month; the HR member's ₹6 cap.
-	if d, err := companyRepo.Dashboard(ctx, slug, admin); err != nil || d.SpentThisMonthPaise != 1500 || d.TotalCapsPaise != 600 {
+	// Dashboard money: 5 × ₹5 posts this month; the HR member's ₹11 cap plus the employee's ₹5.
+	if d, err := companyRepo.Dashboard(ctx, slug, admin); err != nil || d.SpentThisMonthPaise != 2500 || d.TotalCapsPaise != 1600 {
 		t.Fatalf("dashboard money = %+v, %v", d, err)
 	}
 
@@ -120,7 +160,7 @@ func TestPaidJobPosts(t *testing.T) {
 	if limit != 0 {
 		t.Fatalf("offboarded limit: %d", limit)
 	}
-	if d, _ := companyRepo.Dashboard(ctx, slug, admin); d.TotalCapsPaise != 0 {
+	if d, _ := companyRepo.Dashboard(ctx, slug, admin); d.TotalCapsPaise != 500 {
 		t.Fatalf("total caps after offboarding: %d", d.TotalCapsPaise)
 	}
 
@@ -156,6 +196,33 @@ func TestPaidJobPosts(t *testing.T) {
 	}
 	if err := repo.PublishPending(ctx, rec.ID, admin); err != jobs.ErrAlreadyPaid {
 		t.Fatalf("publish twice: %v", err)
+	}
+	// A second order for the same job, paid too: reconciliation reports it, not the first.
+	second := "order_" + uuid.NewString()[:8]
+	if err := wallets.CreatePayment(ctx, payments.Payment{ID: uuid.NewString(), OrderID: second, JobID: rec.ID, UserID: admin, AmountPaise: 500}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wallets.CompletePayment(ctx, payments.Paid{OrderID: second, PaymentID: "pay_j2", AmountPaise: 500, Currency: "INR"}); err != nil {
+		t.Fatal(err)
+	}
+	dups, err := wallets.DuplicateJobPayments(ctx, time.Now().Add(-time.Hour))
+	if err != nil || !slices.Contains(dups, second) || slices.Contains(dups, order) {
+		t.Fatalf("DuplicateJobPayments = %v, %v; want %s only", dups, err, second)
+	}
+
+	// A member who left can't pay to publish their pending company job.
+	left, err := post(employee, &jobs.Charge{Method: jobs.PayOutOfPocket, FeePaise: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := repo.Pending(ctx, left.ID, employee); err != nil || !pending {
+		t.Fatalf("pending while a member: %v %v", pending, err)
+	}
+	if err := companyRepo.Offboard(ctx, slug, admin, employee); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Pending(ctx, left.ID, employee); !jobs.IsForbidden(err) {
+		t.Fatalf("pending after leaving: %v", err)
 	}
 
 	// The Idempotency-Key finds the first post; a second insert with it is refused.

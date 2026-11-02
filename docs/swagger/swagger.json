@@ -2124,7 +2124,7 @@
                 "tags": [
                     "companies"
                 ],
-                "summary": "Set an HR member's company-credit spending limit",
+                "summary": "Set a member's company-credit spending limit (HR or employee)",
                 "operationId": "setMemberAllowance",
                 "parameters": [
                     {
@@ -2136,7 +2136,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "Member user id (a current HR member)",
+                        "description": "Member user id (a current HR member or employee)",
                         "name": "user_id",
                         "in": "path",
                         "required": true

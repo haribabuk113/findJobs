@@ -32,7 +32,7 @@ type CompanyService interface {
 	DecideMember(ctx context.Context, userID, slug, memberID string, approve bool) error
 	// SetMemberRole changes a current member's role (admins)
 	SetMemberRole(ctx context.Context, userID, slug, memberID, role string) error
-	// SetAllowance sets an HR member's company-credit spending limit (admins)
+	// SetAllowance sets an HR member's or employee's company-credit spending limit (admins)
 	SetAllowance(ctx context.Context, userID, slug, memberID string, a companies.Allowance) error
 	// Offboard moves a member to past employees (admins)
 	Offboard(ctx context.Context, userID, slug, memberID string) error

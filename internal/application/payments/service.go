@@ -134,13 +134,13 @@ func (s *service) Reconcile(ctx context.Context) error {
 	}
 	log := logger.Get()
 	ev := log.Info()
-	if r.Mismatched > 0 || r.Unledgered > 0 || r.Applied > 0 {
+	if r.Mismatched > 0 || r.Unledgered > 0 || r.Duplicated > 0 || r.Applied > 0 {
 		ev = log.Error()
 	} else if r.Unknown > 0 {
 		ev = log.Warn()
 	}
 	ev.Int("checked", r.Checked).Int("applied", r.Applied).Int("unknown", r.Unknown).
-		Int("mismatched", r.Mismatched).Int("unledgered", r.Unledgered).Msg("payments reconciled")
+		Int("mismatched", r.Mismatched).Int("unledgered", r.Unledgered).Int("duplicated", r.Duplicated).Msg("payments reconciled")
 	return nil
 }
 
@@ -179,6 +179,15 @@ func (s *service) reconcile(ctx context.Context, now time.Time) (payments.Reconc
 	for _, order := range orders {
 		r.Unledgered++
 		log.Error().Str("order_id", order).Msg("reconcile: paid top-up has no matching ledger row")
+	}
+	// Two orders for one pending job can both be paid (say, two open tabs);
+	// the second publishes nothing, so the user was charged twice.
+	if orders, err = s.repo.DuplicateJobPayments(ctx, from); err != nil {
+		return r, err
+	}
+	for _, order := range orders {
+		r.Duplicated++
+		log.Error().Str("order_id", order).Msg("reconcile: second paid order for an already paid job post (double charge)")
 	}
 	return r, nil
 }

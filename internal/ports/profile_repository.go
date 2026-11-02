@@ -24,7 +24,8 @@ type ProfileRepository interface {
 	// Save creates or replaces the profile with resolved term ids. Unknown
 	// currencies or locations are validation errors; a taken slug is ErrSlugTaken.
 	Save(ctx context.Context, userID string, p *profiles.Profile, skills []ProfileSkill, designationIDs []int64) error
-	// SetPhoto stores the photo key and returns the replaced one ("" if none).
+	// SetPhoto stores the photo key ("" removes the photo) and returns the
+	// replaced one ("" if none).
 	SetPhoto(ctx context.Context, userID, key string) (old string, err error)
 	// Experience returns the registered company linked to the experience at
 	// index (companyID "" when the company isn't on Referise).

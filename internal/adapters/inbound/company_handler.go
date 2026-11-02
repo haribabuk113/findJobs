@@ -339,14 +339,14 @@ func (h *CompanyHandler) SetRole(ctx *gin.Context) {
 
 // SetAllowance handles PUT /companies/:slug/members/:user_id/allowance {"cap_type", "limit_paise"}.
 //
-//	@Summary	Set an HR member's company-credit spending limit
+//	@Summary	Set a member's company-credit spending limit (HR or employee)
 //	@ID			setMemberAllowance
 //	@Tags		companies
 //	@Accept		json
 //	@Produce	json
 //	@Security	sessionCookie
 //	@Param		slug	path	string	true	"Company slug"
-//	@Param		user_id	path	string	true	"Member user id (a current HR member)"
+//	@Param		user_id	path	string	true	"Member user id (a current HR member or employee)"
 //	@Param		body	body	domaincompanies.Allowance	true	"monthly or total, and the limit in paise"
 //	@Success	200	{object}	adapters.Response
 //	@Failure	400,401,403,404,500	{object}	adapters.Response

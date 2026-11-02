@@ -303,7 +303,7 @@ func (e *ForbiddenError) Error() string { return e.Message }
 // Why a paid post can't be paid (the 402's data.reason).
 const (
 	ReasonInsufficientBalance = "insufficient_balance" // the company wallet is short: an admin tops it up
-	ReasonAllowanceExceeded   = "allowance_exceeded"   // the HR member's spending limit is used up
+	ReasonAllowanceExceeded   = "allowance_exceeded"   // the member's spending limit is used up
 	ReasonUnlockRequired      = "unlock_required"      // sort=match without an unlock for these filters
 )
 

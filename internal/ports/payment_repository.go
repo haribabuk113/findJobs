@@ -26,6 +26,9 @@ type WalletRepository interface {
 	// UnledgeredTopups returns the order ids of top-ups paid since since whose
 	// ledger row is missing or has a different amount (reconciliation).
 	UnledgeredTopups(ctx context.Context, since time.Time) ([]string, error)
+	// DuplicateJobPayments returns the order ids, paid since since, of job-post
+	// payments made after another paid order for the same job (reconciliation).
+	DuplicateJobPayments(ctx context.Context, since time.Time) ([]string, error)
 }
 
 // PaymentGateway is the online payment provider (Razorpay, D2).

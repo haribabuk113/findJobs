@@ -28,6 +28,8 @@ type ProfileService interface {
 	Public(ctx context.Context, slug string) (*profiles.Profile, error)
 	// SetPhoto stores a new profile photo (JPEG/PNG/WebP, checked by its bytes).
 	SetPhoto(ctx context.Context, userID, contentType string, data []byte) (*profiles.Profile, error)
+	// DeletePhoto removes the profile photo and its file; without a photo it changes nothing.
+	DeletePhoto(ctx context.Context, userID string) (*profiles.Profile, error)
 	// RequestVerification asks the linked company to verify experience index.
 	RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error)
 	// Skills returns the user's skill set, without the list when signature

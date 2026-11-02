@@ -2,6 +2,7 @@ package payments
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ type fakeRepo struct {
 	ports.WalletRepository
 	paid       map[string]bool
 	unledgered []string
+	duplicated []string
 }
 
 func (r *fakeRepo) CompletePayment(_ context.Context, p payments.Paid) (bool, error) {
@@ -33,6 +35,10 @@ func (r *fakeRepo) UnledgeredTopups(context.Context, time.Time) ([]string, error
 	return r.unledgered, nil
 }
 
+func (r *fakeRepo) DuplicateJobPayments(context.Context, time.Time) ([]string, error) {
+	return r.duplicated, nil
+}
+
 type fakeGateway struct {
 	ports.PaymentGateway
 	captured []payments.Paid
@@ -45,7 +51,7 @@ func (g *fakeGateway) CapturedPayments(_ context.Context, from, to time.Time) ([
 }
 
 func TestReconcile(t *testing.T) {
-	repo := &fakeRepo{paid: map[string]bool{"order_old": true}, unledgered: []string{"order_x"}}
+	repo := &fakeRepo{paid: map[string]bool{"order_old": true}, unledgered: []string{"order_x"}, duplicated: []string{"order_y"}}
 	gw := &fakeGateway{captured: []payments.Paid{
 		{OrderID: "order_new", AmountPaise: 500, Currency: "INR"}, // webhook missed
 		{OrderID: "order_old", AmountPaise: 900, Currency: "INR"}, // already paid
@@ -55,7 +61,7 @@ func TestReconcile(t *testing.T) {
 	now := time.Date(2026, 11, 2, 2, 0, 0, 0, time.UTC)
 
 	r, err := s.reconcile(context.Background(), now)
-	want := payments.Reconciliation{Checked: 3, Applied: 1, Unknown: 1, Unledgered: 1}
+	want := payments.Reconciliation{Checked: 3, Applied: 1, Unknown: 1, Unledgered: 1, Duplicated: 1}
 	if err != nil || r != want {
 		t.Fatalf("reconcile = %+v, %v; want %+v", r, err, want)
 	}
@@ -75,5 +81,42 @@ func TestReconcile(t *testing.T) {
 	// Without a gateway there's nothing to reconcile.
 	if err := NewPaymentService(repo, nil).Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// failingRepo opens wallets but can't record payments (the DB fails after the
+// gateway order exists).
+type failingRepo struct{ ports.WalletRepository }
+
+func (failingRepo) OpenWallet(context.Context, payments.Owner) (string, error) { return "w1", nil }
+func (failingRepo) CreatePayment(context.Context, payments.Payment) error {
+	return errors.New("db down")
+}
+
+type orderGateway struct {
+	ports.PaymentGateway
+	orders int
+}
+
+func (g *orderGateway) CreateOrder(context.Context, int64, string) (string, error) {
+	g.orders++
+	return "order_1", nil
+}
+func (g *orderGateway) KeyID() string { return "rzp_test" }
+
+func TestCheckoutWhenSavingFails(t *testing.T) {
+	gw := &orderGateway{}
+	s := NewPaymentService(failingRepo{}, gw)
+	// No checkout is returned, so the browser never opens an order we didn't
+	// record. The order itself is left unpaid, which costs nothing; if it were
+	// paid anyway, the webhook and reconciliation report it as an unknown order.
+	if c, err := s.Topup(context.Background(), payments.Owner{UserID: "u1"}, 10_000); err == nil || c != nil {
+		t.Fatalf("Topup = %+v, %v; want an error and no checkout", c, err)
+	}
+	if c, err := s.JobPostCheckout(context.Background(), "u1", "job1", 200); err == nil || c != nil {
+		t.Fatalf("JobPostCheckout = %+v, %v; want an error and no checkout", c, err)
+	}
+	if gw.orders != 2 {
+		t.Fatalf("orders created: %d", gw.orders)
 	}
 }

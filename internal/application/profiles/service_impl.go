@@ -137,13 +137,29 @@ func (s *service) SetPhoto(ctx context.Context, userID, contentType string, data
 		s.store.Delete(context.WithoutCancel(ctx), key) // not linked: don't leave an orphan
 		return nil, err
 	}
-	if old != "" {
-		if err := s.store.Delete(ctx, old); err != nil {
-			l := logger.Get()
-			l.Warn().Err(err).Str("key", old).Msg("could not delete replaced profile photo")
-		}
-	}
+	s.deletePhotoFile(ctx, old)
 	return s.repo.Get(ctx, userID)
+}
+
+func (s *service) DeletePhoto(ctx context.Context, userID string) (*profiles.Profile, error) {
+	old, err := s.repo.SetPhoto(ctx, userID, "")
+	if err != nil {
+		return nil, err
+	}
+	s.deletePhotoFile(ctx, old)
+	return s.repo.Get(ctx, userID)
+}
+
+// deletePhotoFile removes a photo file the profile no longer links to. A
+// failure only leaves an orphan file behind, so it's logged, not returned.
+func (s *service) deletePhotoFile(ctx context.Context, key string) {
+	if key == "" {
+		return
+	}
+	if err := s.store.Delete(ctx, key); err != nil {
+		l := logger.Get()
+		l.Warn().Err(err).Str("key", key).Msg("could not delete old profile photo")
+	}
 }
 
 func (s *service) RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error) {

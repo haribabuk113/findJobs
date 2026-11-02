@@ -26,7 +26,8 @@ type RecruitingRepository interface {
 	Create(ctx context.Context, rec *jobs.Record, charge *jobs.Charge) error
 	// PostByKey is the id of the user's job posted with an Idempotency-Key ("" if none)
 	PostByKey(ctx context.Context, userID, key string) (string, error)
-	// Pending reports whether the user's job awaits its payment (ErrJobNotFound if not theirs)
+	// Pending reports whether the user's job awaits its payment (ErrJobNotFound if not
+	// theirs; ForbiddenError for a company job once they're no longer a current member)
 	Pending(ctx context.Context, id, userID string) (bool, error)
 	// PublishPending publishes the user's pending job without payment (the fee became 0)
 	PublishPending(ctx context.Context, id, userID string) error

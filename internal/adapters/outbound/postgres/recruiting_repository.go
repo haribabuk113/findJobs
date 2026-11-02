@@ -27,7 +27,7 @@ func NewRecruitingRepository(pool *pgxpool.Pool) ports.RecruitingRepository {
 func (r *RecruitingRepository) PosterCompanies(ctx context.Context, userID string) ([]jobs.PosterCompany, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT c.slug, c.name, m.role, c.hq_location_id, c.branch_location_ids,
-			CASE m.role WHEN 'admin' THEN NULL WHEN 'hr' THEN GREATEST(0, m.limit_paise - `+spentNow+`) ELSE 0 END
+			CASE m.role WHEN 'admin' THEN NULL ELSE GREATEST(0, m.limit_paise - `+spentNow+`) END
 		FROM company_members m JOIN companies c ON c.id = m.company_id
 		WHERE m.user_id = $1 AND m.status = 'current' AND c.deleted_at IS NULL ORDER BY c.name`, userID)
 	if err != nil {
@@ -120,10 +120,19 @@ func (r *RecruitingRepository) PostByKey(ctx context.Context, userID, key string
 }
 
 func (r *RecruitingRepository) Pending(ctx context.Context, id, userID string) (bool, error) {
-	var pending bool
-	err := r.pool.QueryRow(ctx, `SELECT status = 'pending_payment' FROM jobs WHERE id = $1 AND recruiter_id = $2`, id, userID).Scan(&pending)
+	// Manual: a member who left loses the right to post under the company,
+	// out of pocket included, so a pending company job needs a current member.
+	var pending, member bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT j.status = 'pending_payment', j.company_id IS NULL OR EXISTS (
+			SELECT 1 FROM company_members m JOIN companies c ON c.id = m.company_id
+			WHERE m.company_id = j.company_id AND m.user_id = $2 AND m.status = 'current' AND c.deleted_at IS NULL)
+		FROM jobs j WHERE j.id = $1 AND j.recruiter_id = $2`, id, userID).Scan(&pending, &member)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, jobs.ErrJobNotFound
+	}
+	if err == nil && pending && !member {
+		return false, &jobs.ForbiddenError{Message: "you're no longer a member of this job's company, so it can't be published"}
 	}
 	return pending, err
 }

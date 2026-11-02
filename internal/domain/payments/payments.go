@@ -76,6 +76,7 @@ type Reconciliation struct {
 	Unknown    int // payments for orders we never created (maybe another app's)
 	Mismatched int // paid amount or currency differs from the order
 	Unledgered int // paid top-ups without their matching ledger row
+	Duplicated int // extra paid orders for a job post that was already paid (a double charge)
 }
 
 // ValidateTopup checks a top-up amount.

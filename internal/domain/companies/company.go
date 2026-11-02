@@ -144,14 +144,14 @@ type Member struct {
 	Title       string    `json:"title"`
 	StartedOn   *string   `json:"started_on"`
 	RequestedAt time.Time `json:"requested_at"`
-	// Company-credit allowance (HR; admins have no cap). SpentPaise is the
+	// Company-credit allowance (HR and employees; admins have no cap). SpentPaise is the
 	// current cap period's spending: this IST month for a monthly cap.
 	CapType    string `json:"cap_type"`
 	LimitPaise int64  `json:"limit_paise"`
 	SpentPaise int64  `json:"spent_paise"`
 }
 
-// Allowance caps an HR member's spending of company credits.
+// Allowance caps an HR member's or employee's spending of company credits.
 type Allowance struct {
 	CapType    string `json:"cap_type"` // monthly (IST month) | total
 	LimitPaise int64  `json:"limit_paise"`
@@ -184,7 +184,7 @@ type Dashboard struct {
 	Employees       int `json:"employees"`
 	PendingRequests int `json:"pending_requests"`
 	// SpentThisMonthPaise is what job posts took from the company wallet this
-	// IST calendar month; TotalCapsPaise sums the limits of current HR staff.
+	// IST calendar month; TotalCapsPaise sums the limits of current non-admin members.
 	SpentThisMonthPaise int64 `json:"spent_this_month_paise"`
 	TotalCapsPaise      int64 `json:"total_caps_paise"`
 }

@@ -182,6 +182,15 @@ func TestProfileLifecycle(t *testing.T) {
 	if old, err := repo.SetPhoto(ctx, user, "img/b.jpg"); err != nil || old != "img/a.jpg" {
 		t.Fatalf("second photo: %q %v", old, err)
 	}
+	if old, err := repo.SetPhoto(ctx, user, ""); err != nil || old != "img/b.jpg" {
+		t.Fatalf("remove photo: %q %v", old, err)
+	}
+	if p, err := repo.Get(ctx, user); err != nil || p.Photo != nil {
+		t.Fatalf("after removing, photo = %v, %v", p.Photo, err)
+	}
+	if old, err := repo.SetPhoto(ctx, user, ""); err != nil || old != "" {
+		t.Fatalf("remove again: %q %v", old, err)
+	}
 	if _, err := repo.SetPhoto(ctx, other, "img/c.jpg"); !profiles.IsNotFound(err) {
 		t.Fatalf("photo without profile: %v", err)
 	}
