@@ -2,8 +2,6 @@ package profiles
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"slices"
 	"time"
 
@@ -40,11 +38,15 @@ func (s *service) Mine(ctx context.Context, userID string) (*profiles.Profile, e
 	if err != nil {
 		return nil, err
 	}
-	suffix := make([]byte, 2)
-	rand.Read(suffix)
+	// Manual "Profile URL Slug": generated from the name, -2, -3... on collision.
+	base := profiles.SlugBase(name)
+	taken, err := s.repo.TakenSlugs(ctx, base, userID)
+	if err != nil {
+		return nil, err
+	}
 	// Not stored until the first save; private-by-default like the page's preview.
 	starter := &profiles.Profile{
-		Slug: profiles.StarterSlug(name, hex.EncodeToString(suffix)), Name: name, Email: email,
+		Slug: profiles.FreeSlug(base, taken), Name: name, Email: email,
 		SalaryCurrency: "INR", CurrentSalaryPeriod: "year", ExpectedSalaryPeriod: "year", Visible: true, Open: true,
 		CurrentSalaryVisibility: profiles.VisibleHidden, ExpectedSalaryVisibility: profiles.VisibleApplied,
 		HourlyRateVisibility: profiles.VisibleApplied, ResumeVisibility: profiles.VisibleApplied,
@@ -52,6 +54,14 @@ func (s *service) Mine(ctx context.Context, userID string) (*profiles.Profile, e
 	}
 	starter.EnsureLists()
 	return starter, nil
+}
+
+func (s *service) SlugAvailable(ctx context.Context, userID, slug string) (bool, error) {
+	if err := profiles.ValidateSlug(slug); err != nil {
+		return false, err
+	}
+	taken, err := s.repo.TakenSlugs(ctx, slug, userID)
+	return !taken[slug], err
 }
 
 func (s *service) Save(ctx context.Context, userID string, in *profiles.Profile) (*profiles.Profile, error) {

@@ -27,10 +27,20 @@ type Profile struct {
 	// the owner's own views). Never serialised: ids stay out of the API.
 	OwnerID string `json:"-"`
 
-	Slug     string `json:"slug"`
-	Name     string `json:"name"`
-	Title    string `json:"title"`
+	Slug  string `json:"slug"`
+	Name  string `json:"name"`
+	Title string `json:"title"`
+	// Location is the current work location's label. With CurrentLocationID
+	// set the server fills it from the location tree ("Bengaluru, Karnataka,
+	// India"); without one it is the free text an older client sent.
 	Location string `json:"location"`
+
+	// Current professional status (newer doc §3).
+	CurrentCompany         string `json:"current_company"`
+	CurrentLocationID      string `json:"current_location_id"` // GeoNames id
+	CurrentWorkArrangement string `json:"current_work_arrangement"`
+	CurrentWorkType        string `json:"current_work_type"`
+
 	Website  string `json:"website"` // portfolio display name, e.g. "asha.design"
 	About    string `json:"about"`
 	Gender   string `json:"gender"`
@@ -103,17 +113,28 @@ type SocialLink struct {
 	URL      string `json:"url"`
 }
 
+// Language: the doc asks for Read / Write / Speak, with no proficiency level.
 type Language struct {
-	Name        string `json:"name"`
-	Proficiency string `json:"proficiency"`
+	Name  string `json:"name"`
+	Read  bool   `json:"read"`
+	Write bool   `json:"write"`
+	Speak bool   `json:"speak"`
+	// LegacyProficiency is what older clients send instead of the three
+	// flags; it is read on save (as "knows all three") and never returned.
+	LegacyProficiency string `json:"proficiency,omitempty"`
 }
 
+// Education stays free-form (newer doc §7).
 type Education struct {
-	Institution string `json:"institution"`
-	Degree      string `json:"degree"`
-	Field       string `json:"field"`
-	Start       string `json:"start"`
-	End         string `json:"end"`
+	Institution  string   `json:"institution"`
+	Degree       string   `json:"degree"`
+	Field        string   `json:"field"`
+	Start        string   `json:"start"`
+	End          string   `json:"end"`
+	Grade        string   `json:"grade"` // GPA, percentage, class: systems vary
+	Honors       string   `json:"honors"`
+	Description  string   `json:"description"`
+	Achievements []string `json:"achievements"`
 }
 
 // Project is one portfolio entry ("A few things I've made"); URL and tags are optional.
@@ -132,19 +153,49 @@ type Authorization struct {
 	Indefinite bool   `json:"indefinite"`
 }
 
-// Experience is one work-history entry. Verification and CompanySlug are
-// read-only: they come from the company's membership records.
+// Experience is one employment record of the career timeline (newer doc §6):
+// a company, the employment period and the roles held there. The blue tick
+// belongs to the record. Verification, CompanySlug and Location are read-only.
 type Experience struct {
-	Company      string `json:"company"`
-	Title        string `json:"title"`
-	Type         string `json:"type"`
-	Start        string `json:"start"` // YYYY-MM
-	End          string `json:"end"`   // YYYY-MM, "" while current
-	Current      bool   `json:"current"`
-	Promoted     bool   `json:"promoted"`
-	Description  string `json:"description"`
-	Verification string `json:"verification"`
-	CompanySlug  string `json:"company_slug"`
+	Company         string `json:"company"`
+	Type            string `json:"type"` // work type: jobs.WorkTypes
+	WorkArrangement string `json:"work_arrangement"`
+	LocationID      string `json:"location_id"` // GeoNames id, optional
+	Location        string `json:"location"`    // read-only label of LocationID
+	Start           string `json:"start"`       // YYYY-MM
+	End             string `json:"end"`         // YYYY-MM, "" while current
+	Current         bool   `json:"current"`
+	Roles           []Role `json:"roles"`
+	Verification    string `json:"verification"`
+	CompanySlug     string `json:"company_slug"`
+
+	// Older clients send one role flat on the record; on save these become
+	// its single role. Never returned.
+	LegacyTitle       string `json:"title,omitempty"`
+	LegacyPromoted    bool   `json:"promoted,omitempty"`
+	LegacyDescription string `json:"description,omitempty"`
+}
+
+// Role is one designation held within an employment record.
+type Role struct {
+	Title            string   `json:"title"`
+	Start            string   `json:"start"` // YYYY-MM
+	End              string   `json:"end"`   // YYYY-MM, "" for the ongoing role
+	Promoted         bool     `json:"promoted"`
+	Responsibilities string   `json:"responsibilities"`
+	Achievements     []string `json:"achievements"`
+}
+
+// LatestTitle is the title of the role that started last: what the company
+// is asked to verify.
+func (e Experience) LatestTitle() string {
+	title, start := "", ""
+	for _, r := range e.Roles {
+		if r.Start >= start {
+			title, start = r.Title, r.Start
+		}
+	}
+	return title
 }
 
 // Verification labels shown on experiences.
@@ -210,19 +261,27 @@ func CarryReviews(old, next []LinkedExperience) []string {
 	return out
 }
 
+// sameEntry: any edit to a record or one of its roles counts (manual
+// "Re-Verification Rule").
 func sameEntry(a, b Experience) bool {
-	return a.Title == b.Title && a.Type == b.Type && a.Start == b.Start && a.End == b.End &&
-		a.Current == b.Current && a.Promoted == b.Promoted && a.Description == b.Description
+	return a.Type == b.Type && a.WorkArrangement == b.WorkArrangement && a.LocationID == b.LocationID &&
+		a.Start == b.Start && a.End == b.End && a.Current == b.Current &&
+		slices.EqualFunc(a.Roles, b.Roles, func(x, y Role) bool {
+			return x.Title == y.Title && x.Start == y.Start && x.End == y.End && x.Promoted == y.Promoted &&
+				x.Responsibilities == y.Responsibilities && slices.Equal(x.Achievements, y.Achievements)
+		})
 }
 
 // Limits on list sizes (the resolve call takes at most 50 names).
 const (
-	MaxSkills      = 50
-	MaxSkillGroups = 20
-	MaxTargetRoles = 20
-	MaxLocations   = 50
-	MaxExperiences = 50
-	maxListItems   = 20
+	MaxSkills       = 50
+	MaxSkillGroups  = 20
+	MaxTargetRoles  = 20
+	MaxLocations    = 50
+	MaxExperiences  = 50
+	MaxRoles        = 20 // per employment record
+	maxListItems    = 20
+	maxAchievements = 20
 )
 
 // Visibility values for the privacy settings.
@@ -269,11 +328,8 @@ func (p *Profile) Normalize() error {
 	p.Saved, p.Photo, p.AboutUpdated, p.Skills = false, nil, nil, nil
 	var err error
 	p.Slug = strings.TrimSpace(p.Slug)
-	if utf8.RuneCountInString(p.Slug) < 3 || len(p.Slug) > 50 || !slugPattern.MatchString(p.Slug) {
-		return invalid("slug", "use 3-50 lowercase letters, numbers and single hyphens for your profile handle")
-	}
-	if slices.Contains(reservedSlugs, p.Slug) {
-		return invalid("slug", "that profile handle is reserved")
+	if err := ValidateSlug(p.Slug); err != nil {
+		return err
 	}
 	for _, f := range []struct {
 		field    string
@@ -283,7 +339,8 @@ func (p *Profile) Normalize() error {
 	}{
 		{"name", &p.Name, 2, 100, false},
 		{"title", &p.Title, 1, 120, false},
-		{"location", &p.Location, 0, 100, false},
+		{"location", &p.Location, 0, 200, false},
+		{"current_company", &p.CurrentCompany, 0, 150, false},
 		{"website", &p.Website, 0, 100, false},
 		{"about", &p.About, 0, 2000, true},
 		{"pronouns", &p.Pronouns, 0, 100, false},
@@ -291,6 +348,15 @@ func (p *Profile) Normalize() error {
 		if *f.value, err = cleanText(f.field, *f.value, f.min, f.max, f.multi); err != nil {
 			return err
 		}
+	}
+	if p.CurrentLocationID != "" && !geonameID.MatchString(p.CurrentLocationID) {
+		return invalid("current_location_id", "unknown location")
+	}
+	if p.CurrentWorkArrangement != "" && !slices.Contains(jobs.WorkModes, p.CurrentWorkArrangement) {
+		return invalid("current_work_arrangement", "a work arrangement is Remote, Hybrid or On-site")
+	}
+	if p.CurrentWorkType != "" && !slices.Contains(jobs.WorkTypes, p.CurrentWorkType) {
+		return invalid("current_work_type", "unknown work type")
 	}
 	if p.Gender != "" && !slices.Contains(Genders, p.Gender) {
 		return invalid("gender", "unknown gender option")
@@ -484,18 +550,23 @@ func (p *Profile) normalizeExperiences() error {
 	var err error
 	for i := range p.Experiences {
 		e := &p.Experiences[i]
-		e.Verification, e.CompanySlug = "", ""
+		e.Verification, e.CompanySlug, e.Location = "", "", ""
+		if len(e.Roles) == 0 && e.LegacyTitle != "" { // an older client's flat entry
+			e.Roles = []Role{{Title: e.LegacyTitle, Start: e.Start, End: e.End, Promoted: e.LegacyPromoted,
+				Responsibilities: e.LegacyDescription}}
+		}
+		e.LegacyTitle, e.LegacyPromoted, e.LegacyDescription = "", false, ""
 		if e.Company, err = cleanText("company", e.Company, 1, 150, false); err != nil {
-			return err
-		}
-		if e.Title, err = cleanText("job title", e.Title, 1, 150, false); err != nil {
-			return err
-		}
-		if e.Description, err = cleanText("description", e.Description, 0, 5000, true); err != nil {
 			return err
 		}
 		if !slices.Contains(jobs.WorkTypes, e.Type) {
 			return invalid("experiences", "unknown employment type")
+		}
+		if e.WorkArrangement != "" && !slices.Contains(jobs.WorkModes, e.WorkArrangement) {
+			return invalid("experiences", "a work arrangement is Remote, Hybrid or On-site")
+		}
+		if e.LocationID != "" && !geonameID.MatchString(e.LocationID) {
+			return invalid("experiences", "unknown location")
 		}
 		if !monthPattern.MatchString(e.Start) {
 			return invalid("experiences", "add a start month to each experience")
@@ -505,8 +576,61 @@ func (p *Profile) normalizeExperiences() error {
 		} else if !monthPattern.MatchString(e.End) || e.End < e.Start {
 			return invalid("experiences", "an experience needs an end month on or after its start")
 		}
+		if err := e.normalizeRoles(); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// normalizeRoles checks each role lies within its employment period. Only a
+// current record's roles may be open-ended; a past record's role without an
+// end month ends with the record.
+func (e *Experience) normalizeRoles() error {
+	if len(e.Roles) == 0 || len(e.Roles) > MaxRoles {
+		return invalid("roles", fmt.Sprintf("add 1 to %d roles to each experience", MaxRoles))
+	}
+	var err error
+	for i := range e.Roles {
+		r := &e.Roles[i]
+		if r.Title, err = cleanText("role title", r.Title, 1, 150, false); err != nil {
+			return err
+		}
+		if r.Responsibilities, err = cleanText("responsibilities", r.Responsibilities, 0, 5000, true); err != nil {
+			return err
+		}
+		if r.Achievements, err = cleanList("achievement", r.Achievements, 500); err != nil {
+			return err
+		}
+		if !monthPattern.MatchString(r.Start) || r.Start < e.Start {
+			return invalid("roles", "give each role a start month within its experience")
+		}
+		if r.End == "" && !e.Current {
+			r.End = e.End
+		}
+		if r.End != "" && (!monthPattern.MatchString(r.End) || r.End < r.Start || (!e.Current && r.End > e.End)) {
+			return invalid("roles", "a role's end month must be on or after its start and within its experience")
+		}
+	}
+	return nil
+}
+
+// cleanList cleans each item of a bullet list and drops empty ones.
+func cleanList(field string, items []string, max int) ([]string, error) {
+	if len(items) > maxAchievements {
+		return nil, invalid(field, fmt.Sprintf("add at most %d items to a list", maxAchievements))
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item, err := cleanText(field, item, 0, max, false)
+		if err != nil {
+			return nil, err
+		}
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func (d *Details) normalize() error {
@@ -528,9 +652,10 @@ func (d *Details) normalize() error {
 		if l.Name, err = cleanText("language", l.Name, 1, 60, false); err != nil {
 			return err
 		}
-		if l.Proficiency, err = cleanText("proficiency", l.Proficiency, 0, 30, false); err != nil {
-			return err
+		if !l.Read && !l.Write && !l.Speak && l.LegacyProficiency != "" {
+			l.Read, l.Write, l.Speak = true, true, true
 		}
+		l.LegacyProficiency = ""
 	}
 	for i := range d.Education {
 		e := &d.Education[i]
@@ -539,10 +664,17 @@ func (d *Details) normalize() error {
 			value    *string
 			min, max int
 		}{{"institution", &e.Institution, 0, 150}, {"degree", &e.Degree, 0, 150}, {"field of study", &e.Field, 0, 150},
-			{"education start", &e.Start, 0, 10}, {"education end", &e.End, 0, 10}} {
+			{"education start", &e.Start, 0, 10}, {"education end", &e.End, 0, 10}, {"grade", &e.Grade, 0, 50},
+			{"honors", &e.Honors, 0, 200}} {
 			if *f.value, err = cleanText(f.field, *f.value, f.min, f.max, false); err != nil {
 				return err
 			}
+		}
+		if e.Description, err = cleanText("education description", e.Description, 0, 2000, true); err != nil {
+			return err
+		}
+		if e.Achievements, err = cleanList("achievement", e.Achievements, 500); err != nil {
+			return err
 		}
 		if e.Institution == "" && e.Degree == "" {
 			return invalid("education", "give each education entry an institution or a degree")
@@ -640,6 +772,22 @@ func (p *Profile) EnsureLists() {
 	if p.Education == nil {
 		p.Education = []Education{}
 	}
+	for i := range p.Education {
+		if p.Education[i].Achievements == nil {
+			p.Education[i].Achievements = []string{}
+		}
+	}
+	for i := range p.Experiences {
+		e := &p.Experiences[i]
+		if e.Roles == nil {
+			e.Roles = []Role{}
+		}
+		for j := range e.Roles {
+			if e.Roles[j].Achievements == nil {
+				e.Roles[j].Achievements = []string{}
+			}
+		}
+	}
 	if p.Authorizations == nil {
 		p.Authorizations = []Authorization{}
 	}
@@ -648,8 +796,34 @@ func (p *Profile) EnsureLists() {
 	}
 }
 
-// StarterSlug suggests a handle from a name: "Asha Rao" -> "asha-rao-<suffix>".
-func StarterSlug(name, suffix string) string {
+// ValidateSlug checks a profile handle's format and the reserved list.
+func ValidateSlug(slug string) error {
+	if utf8.RuneCountInString(slug) < 3 || len(slug) > 50 || !slugPattern.MatchString(slug) {
+		return invalid("slug", "use 3-50 lowercase letters, numbers and single hyphens for your profile handle")
+	}
+	if slices.Contains(reservedSlugs, slug) {
+		return invalid("slug", "that profile handle is reserved")
+	}
+	return nil
+}
+
+// FreeSlug is the first valid handle among base, base-2, base-3, ... that
+// isn't in taken (manual "Profile URL Slug": a numeric suffix on collision).
+func FreeSlug(base string, taken map[string]bool) string {
+	for n := 1; ; n++ {
+		slug := base
+		if n > 1 {
+			slug = fmt.Sprintf("%s-%d", base, n)
+		}
+		if !taken[slug] && ValidateSlug(slug) == nil {
+			return slug
+		}
+	}
+}
+
+// SlugBase turns a name into a handle base: "Asha Rao" -> "asha-rao".
+// A name with no ASCII letters or digits gives "member".
+func SlugBase(name string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
 		switch {
@@ -664,9 +838,9 @@ func StarterSlug(name, suffix string) string {
 		base = strings.Trim(base[:40], "-")
 	}
 	if base == "" {
-		return "member-" + suffix
+		return "member"
 	}
-	return base + "-" + suffix
+	return base
 }
 
 func enumList(field string, values, allowed []string) ([]string, error) {

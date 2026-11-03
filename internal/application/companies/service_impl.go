@@ -58,7 +58,52 @@ func (s *service) Update(ctx context.Context, userID, slug string, in *companies
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.Update(ctx, slug, userID, in, country)
+	c, removed, err := s.repo.Update(ctx, slug, userID, in, country)
+	if err != nil {
+		return nil, err
+	}
+	s.deleteFiles(ctx, removed...)
+	return c, nil
+}
+
+func (s *service) SetProductImage(ctx context.Context, userID, slug string, index int, contentType string, data []byte) (*companies.Company, error) {
+	if index < 0 {
+		return nil, &companies.NotFoundError{Message: "product not found"}
+	}
+	key := ""
+	if data != nil {
+		ext, err := companies.CheckImage(data, contentType, companies.MaxProductImageBytes)
+		if err != nil {
+			return nil, err
+		}
+		key = "img/" + uuid.NewString() + "." + ext
+		if err := s.store.Put(ctx, key, contentType, data); err != nil {
+			return nil, err
+		}
+	}
+	old, err := s.repo.SetProductImage(ctx, slug, userID, index, key)
+	if err != nil {
+		if key != "" {
+			s.store.Delete(context.WithoutCancel(ctx), key) // not linked: don't leave an orphan
+		}
+		return nil, err
+	}
+	s.deleteFiles(ctx, old)
+	return s.repo.GetBySlug(ctx, slug, userID)
+}
+
+// deleteFiles removes images nothing links to any more. A failure only
+// leaves an orphan file, so it's logged, not returned.
+func (s *service) deleteFiles(ctx context.Context, keys ...string) {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if err := s.store.Delete(ctx, key); err != nil {
+			l := logger.Get()
+			l.Warn().Err(err).Str("key", key).Msg("could not delete replaced company image")
+		}
+	}
 }
 
 func (s *service) Delete(ctx context.Context, userID, slug string) error {
@@ -83,12 +128,7 @@ func (s *service) SetImage(ctx context.Context, userID, slug, kind, contentType 
 		s.store.Delete(context.WithoutCancel(ctx), key) // not linked: don't leave an orphan
 		return nil, err
 	}
-	if old != "" {
-		if err := s.store.Delete(ctx, old); err != nil {
-			l := logger.Get()
-			l.Warn().Err(err).Str("key", old).Msg("could not delete replaced company image")
-		}
-	}
+	s.deleteFiles(ctx, old)
 	return s.repo.GetBySlug(ctx, slug, userID)
 }
 

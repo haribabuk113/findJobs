@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,9 +22,20 @@ func testProfile(slug string) *profiles.Profile {
 		HourlyRateVisibility: "all", ResumeVisibility: "applied", CurrentSalaryPeriod: "year", ExpectedSalaryPeriod: "month",
 		Availability: profiles.ServingNotice, LastWorkingDate: "2026-12-01", NoticeValue: 2, NoticeUnit: "months",
 		Notice: "60 days", Travel: "Occasional travel",
-		Experiences: []profiles.Experience{{Company: "Test Co " + slug, Title: "Designer", Type: "Full-time", Start: "2023-03", Current: true},
-			{Company: "Unknown Ltd", Title: "Intern", Type: "Internship", Start: "2020-01", End: "2020-06"}},
-		Details: profiles.Details{Languages: []profiles.Language{{Name: "English", Proficiency: "Fluent"}}},
+		CurrentCompany: "Test Co " + slug, CurrentLocationID: "1277333", CurrentWorkArrangement: "Hybrid",
+		CurrentWorkType: "Full-time", Location: "typed text, replaced by the label",
+		Experiences: []profiles.Experience{
+			{Company: "Test Co " + slug, Type: "Full-time", WorkArrangement: "Hybrid", LocationID: "1277333",
+				Start: "2023-03", Current: true, Roles: []profiles.Role{
+					{Title: "Junior Designer", Start: "2023-03", End: "2024-02", Achievements: []string{"Shipped v1"}},
+					{Title: "Designer", Start: "2024-03", Promoted: true, Achievements: []string{}}}},
+			{Company: "Unknown Ltd", Type: "Internship", Start: "2020-01", End: "2020-06",
+				Roles: []profiles.Role{{Title: "Intern", Start: "2020-01", End: "2020-06", Achievements: []string{}}}}},
+		Details: profiles.Details{
+			Languages: []profiles.Language{{Name: "English", Read: true, Write: true, Speak: true}, {Name: "Tamil", Speak: true}},
+			Education: []profiles.Education{{Institution: "NID", Degree: "B.Des", Grade: "8.9 CGPA", Honors: "Gold medal",
+				Description: "Studio work", Achievements: []string{"Best thesis"}}},
+		},
 	}
 	return p
 }
@@ -132,6 +144,36 @@ func TestProfileLifecycle(t *testing.T) {
 		got.Experiences[1].CompanySlug != "" || got.Languages[0].Name != "English" {
 		t.Fatalf("experiences/details: %+v %+v", got.Experiences, got.Details)
 	}
+	// Current status, the timeline's roles and the details lists round-trip;
+	// the location labels come from the location tree.
+	e0 := got.Experiences[0]
+	if got.CurrentCompany != p.CurrentCompany || got.CurrentLocationID != "1277333" || got.CurrentWorkArrangement != "Hybrid" ||
+		got.CurrentWorkType != "Full-time" || !strings.HasPrefix(got.Location, "Bengaluru") {
+		t.Fatalf("current status: %q %q %q %q %q", got.CurrentCompany, got.CurrentLocationID, got.CurrentWorkArrangement,
+			got.CurrentWorkType, got.Location)
+	}
+	if e0.LocationID != "1277333" || !strings.HasPrefix(e0.Location, "Bengaluru") || e0.WorkArrangement != "Hybrid" ||
+		len(e0.Roles) != 2 || e0.Roles[0].Achievements[0] != "Shipped v1" || !e0.Roles[1].Promoted || e0.Roles[1].End != "" {
+		t.Fatalf("timeline: %+v", e0)
+	}
+	if l, ed := got.Languages, got.Education[0]; l[1].Read || !l[1].Speak || ed.Grade != "8.9 CGPA" || ed.Achievements[0] != "Best thesis" {
+		t.Fatalf("details: %+v %+v", l, ed)
+	}
+	var dossierLocation string
+	if err := pool.QueryRow(ctx, `SELECT location_label FROM profiles WHERE user_id = $1`, user).Scan(&dossierLocation); err != nil ||
+		dossierLocation != got.Location {
+		t.Fatalf("stored label %q, %v", dossierLocation, err)
+	}
+	// Handles: the user's own isn't "taken" for them; base-* matches count.
+	if taken, err := repo.TakenSlugs(ctx, slug, other); err != nil || !taken[slug] {
+		t.Fatalf("taken for another user: %v %v", taken, err)
+	}
+	if taken, err := repo.TakenSlugs(ctx, slug, user); err != nil || len(taken) != 0 {
+		t.Fatalf("own slug: %v %v", taken, err)
+	}
+	if taken, err := repo.TakenSlugs(ctx, strings.TrimSuffix(slug, slug[len(slug)-4:]), other); err != nil || taken[slug] {
+		t.Fatalf("a prefix that isn't base-*: %v %v", taken, err)
+	}
 
 	// Verification comes from the company's membership decision.
 	x, err := repo.Experience(ctx, user, 0)
@@ -182,7 +224,7 @@ func TestProfileLifecycle(t *testing.T) {
 	if v := verification(); v != profiles.Verified || inQueue() {
 		t.Fatalf("after approval and an unchanged save: %s, queued %v", v, inQueue())
 	}
-	p.Experiences[0].Description = "Led the design system"
+	p.Experiences[0].Roles[1].Achievements = []string{"Led the design system"} // an edit inside a role
 	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +237,7 @@ func TestProfileLifecycle(t *testing.T) {
 	if err := crepo.DecideMember(ctx, slug, other, user, true); err != nil || verification() != profiles.Verified {
 		t.Fatalf("re-approval: %v %s", err, verification())
 	}
-	p.Experiences[0].Title = "Design Lead"
+	p.Experiences[0].Roles[1].Title = "Design Lead"
 	if err := repo.Save(ctx, user, p, rows, []int64{roles[0].ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +271,16 @@ func TestProfileLifecycle(t *testing.T) {
 	bad.PreferredLocations = []string{"999999999999"}
 	if err := repo.Save(ctx, user, bad, nil, nil); !profiles.IsValidation(err) {
 		t.Fatalf("unknown location: %v", err)
+	}
+	for _, mutate := range []func(*profiles.Profile){
+		func(b *profiles.Profile) { b.CurrentLocationID = "999999999999" },
+		func(b *profiles.Profile) { b.Experiences[0].LocationID = "999999999999" },
+	} {
+		bad = testProfile(slug)
+		mutate(bad)
+		if err := repo.Save(ctx, user, bad, nil, nil); !profiles.IsValidation(err) {
+			t.Fatalf("unknown current/experience location: %v", err)
+		}
 	}
 	bad = testProfile(slug)
 	bad.SalaryCurrency = "ZZZ"

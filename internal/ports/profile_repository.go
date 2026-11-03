@@ -25,6 +25,8 @@ type ProfileRepository interface {
 	// GetPublic returns the profile behind slug, or ErrNotFound when there is
 	// none or it is private.
 	GetPublic(ctx context.Context, slug string) (*profiles.Profile, error)
+	// TakenSlugs returns the handles other users hold among base and base-*.
+	TakenSlugs(ctx context.Context, base, userID string) (map[string]bool, error)
 	// Account returns the name and email IAM gave the user.
 	Account(ctx context.Context, userID string) (name, email string, err error)
 	// Save creates or replaces the profile with resolved term ids. Unknown

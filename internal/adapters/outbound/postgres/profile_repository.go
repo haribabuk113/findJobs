@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,7 +33,15 @@ const profileColumns = `p.user_id, p.slug, p.name, p.headline, p.location_label,
 	ARRAY(SELECT d.name FROM unnest(p.designation_ids) WITH ORDINALITY AS u(id, ord) JOIN designations d ON d.id = u.id ORDER BY u.ord),
 	p.open_to_remote, p.relocation, p.travel, p.is_public, p.open_to_work, p.current_salary_visibility,
 	p.expected_salary_visibility, p.hourly_rate_visibility, p.resume_visibility, p.contact_visibility,
-	p.details, p.website, p.work_mode`
+	p.details, p.website, p.work_mode, p.current_company, COALESCE(p.current_location_id, ''),
+	p.current_work_arrangement, p.current_work_type`
+
+// locationLabel is the "City, Region, Country" label of the location id in idExpr.
+func locationLabel(idExpr string) string {
+	return `(SELECT concat_ws(', ', l.name, p1.name, p2.name) FROM locations l
+		LEFT JOIN locations p1 ON p1.id = l.parent_id LEFT JOIN locations p2 ON p2.id = p1.parent_id
+		WHERE l.id = ` + idExpr + `)`
+}
 
 // annualSQL is the yearly amount of an amount column paid per periodColumn,
 // so expected salaries compare with jobs' annual figures.
@@ -61,7 +70,8 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 		&p.LastWorkingDate, &p.SalaryCurrency, &p.CurrentSalary, &p.CurrentSalaryPeriod, &p.ExpectedSalary,
 		&p.ExpectedSalaryPeriod, &p.HourlyRate, &p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.OpenToRemote,
 		&p.Relocation, &p.Travel, &p.Visible, &p.Open, &p.CurrentSalaryVisibility, &p.ExpectedSalaryVisibility,
-		&p.HourlyRateVisibility, &p.ResumeVisibility, &p.ContactVisibility, &details, &p.Website, &p.WorkMode)
+		&p.HourlyRateVisibility, &p.ResumeVisibility, &p.ContactVisibility, &details, &p.Website, &p.WorkMode,
+		&p.CurrentCompany, &p.CurrentLocationID, &p.CurrentWorkArrangement, &p.CurrentWorkType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, profiles.ErrNotFound
 	}
@@ -102,9 +112,9 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 
 	// Each entry carries its own review state; a deleted company verifies nothing.
 	rows, err = r.pool.Query(ctx, `
-		SELECT e.company_name, e.title, e.work_type, e.start_month, COALESCE(e.end_month, ''), e.is_current,
-			e.promoted, e.description, COALESCE(c.slug, ''),
-			CASE WHEN c.id IS NULL THEN 'Unverified' ELSE initcap(e.verification) END
+		SELECT e.company_name, e.work_type, e.work_arrangement, COALESCE(e.location_id, ''),
+			COALESCE(`+locationLabel("e.location_id")+`, ''), e.start_month, COALESCE(e.end_month, ''), e.is_current,
+			e.roles, COALESCE(c.slug, ''), CASE WHEN c.id IS NULL THEN 'Unverified' ELSE initcap(e.verification) END
 		FROM profile_experiences e
 		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
 		WHERE e.user_id = $1 ORDER BY e.position`, userID)
@@ -113,15 +123,38 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 	}
 	p.Experiences, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (profiles.Experience, error) {
 		var e profiles.Experience
-		err := row.Scan(&e.Company, &e.Title, &e.Type, &e.Start, &e.End, &e.Current, &e.Promoted, &e.Description,
-			&e.CompanySlug, &e.Verification)
-		return e, err
+		var roles []byte
+		if err := row.Scan(&e.Company, &e.Type, &e.WorkArrangement, &e.LocationID, &e.Location, &e.Start, &e.End,
+			&e.Current, &roles, &e.CompanySlug, &e.Verification); err != nil {
+			return e, err
+		}
+		return e, json.Unmarshal(roles, &e.Roles)
 	})
 	if err != nil {
 		return nil, err
 	}
 	p.EnsureLists()
 	return &p, nil
+}
+
+func (r *ProfileRepository) TakenSlugs(ctx context.Context, base, userID string) (map[string]bool, error) {
+	// base is a validated slug ([a-z0-9-]), so it holds no LIKE wildcards.
+	rows, err := r.pool.Query(ctx, `SELECT slug FROM profiles WHERE (slug = $1 OR slug LIKE $1 || '-%') AND user_id <> $2`,
+		base, userID)
+	if err != nil {
+		return nil, err
+	}
+	taken := map[string]bool{}
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		taken[slug] = true
+	}
+	rows.Close()
+	return taken, rows.Err()
 }
 
 func (r *ProfileRepository) Account(ctx context.Context, userID string) (string, string, error) {
@@ -148,12 +181,14 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 	if err != nil {
 		return err
 	}
-	var known int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM locations WHERE id = ANY($1)`, p.PreferredLocations).Scan(&known); err != nil {
-		return err
-	}
-	if known != len(p.PreferredLocations) {
-		return &profiles.ValidationError{Field: "preferred_locations", Message: "unknown location"}
+	for field, ids := range profileLocations(p) {
+		var known int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM locations WHERE id = ANY($1)`, ids).Scan(&known); err != nil {
+			return err
+		}
+		if known != len(ids) {
+			return &profiles.ValidationError{Field: field, Message: "unknown location"}
+		}
 	}
 
 	p.EnsureLists() // nil slices would be stored as NULL arrays
@@ -174,10 +209,12 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 			last_working_date, salary_currency, current_salary, current_salary_period, expected_salary,
 			expected_salary_period, expected_salary_inr, hourly_rate, work_types, location_ids, designation_ids,
 			open_to_remote, relocation, travel, is_public, open_to_work, current_salary_visibility,
-			expected_salary_visibility, hourly_rate_visibility, resume_visibility, contact_visibility, details, website, work_mode)
-		VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 <> '' THEN NOW() END, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+			expected_salary_visibility, hourly_rate_visibility, resume_visibility, contact_visibility, details, website, work_mode,
+			current_company, current_location_id, current_work_arrangement, current_work_type)
+		VALUES ($1, $2, $3, $4, COALESCE(`+locationLabel("$42::text")+`, $5), $6, CASE WHEN $6 <> '' THEN NOW() END, $7, $8,
+			$9, $10, $11, $12, $13, $14, $15,
 			$16, $17, $18, $19, $20, $21, $22, `+annualSQL("$21 * $23::numeric", "$22")+`, $24, $25, $26, $27, $28, $29, $30,
-			$31, $32, $33, $34, $35, $36, $37, $38, $39, $40)
+			$31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
 		ON CONFLICT (user_id) DO UPDATE SET slug = EXCLUDED.slug, name = EXCLUDED.name, headline = EXCLUDED.headline,
 			location_label = EXCLUDED.location_label, about = EXCLUDED.about,
 			about_updated_at = CASE WHEN profiles.about IS DISTINCT FROM EXCLUDED.about THEN NOW() ELSE profiles.about_updated_at END,
@@ -195,13 +232,17 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 			expected_salary_visibility = EXCLUDED.expected_salary_visibility,
 			hourly_rate_visibility = EXCLUDED.hourly_rate_visibility, resume_visibility = EXCLUDED.resume_visibility,
 			contact_visibility = EXCLUDED.contact_visibility, details = EXCLUDED.details,
-			website = EXCLUDED.website, work_mode = EXCLUDED.work_mode, updated_at = NOW()`,
+			website = EXCLUDED.website, work_mode = EXCLUDED.work_mode, current_company = EXCLUDED.current_company,
+			current_location_id = EXCLUDED.current_location_id,
+			current_work_arrangement = EXCLUDED.current_work_arrangement,
+			current_work_type = EXCLUDED.current_work_type, updated_at = NOW()`,
 		userID, p.Slug, p.Name, p.Title, p.Location, p.About, p.Gender, p.Pronouns, p.Email, p.Phone,
 		p.ExperienceYears, p.Notice, noticeValue, p.NoticeUnit, p.Availability, dateOrNil(p.AvailableFrom),
 		dateOrNil(p.LastWorkingDate), p.SalaryCurrency, p.CurrentSalary, p.CurrentSalaryPeriod, p.ExpectedSalary,
 		p.ExpectedSalaryPeriod, rate, p.HourlyRate, p.WorkTypes, p.PreferredLocations, designationIDs, p.OpenToRemote,
 		p.Relocation, p.Travel, p.Visible, p.Open, p.CurrentSalaryVisibility, p.ExpectedSalaryVisibility,
-		p.HourlyRateVisibility, p.ResumeVisibility, p.ContactVisibility, details, p.Website, p.WorkMode)
+		p.HourlyRateVisibility, p.ResumeVisibility, p.ContactVisibility, details, p.Website, p.WorkMode,
+		p.CurrentCompany, textOrNil(p.CurrentLocationID), p.CurrentWorkArrangement, p.CurrentWorkType)
 	if isUniqueViolation(err) {
 		return profiles.ErrSlugTaken
 	}
@@ -224,21 +265,21 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 	}
 
 	n := len(p.Experiences)
-	company, title, kind, start, end, desc := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]*string, n), make([]string, n)
-	current, promoted := make([]bool, n), make([]bool, n)
+	company, kind, arrangement, start, roles := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+	location, end, current := make([]*string, n), make([]*string, n), make([]bool, n)
 	for i, e := range p.Experiences {
-		company[i], title[i], kind[i], start[i], desc[i] = e.Company, e.Title, e.Type, e.Start, e.Description
-		current[i], promoted[i] = e.Current, e.Promoted
-		if e.End != "" {
-			end[i] = &e.End
+		company[i], kind[i], arrangement[i], start[i], current[i] = e.Company, e.Type, e.WorkArrangement, e.Start, e.Current
+		location[i], end[i] = textOrNil(e.LocationID), textOrNil(e.End)
+		b, err := json.Marshal(e.Roles)
+		if err != nil {
+			return err
 		}
+		roles[i] = string(b)
 	}
 	// The entries being replaced, with their review states, so unchanged ones
 	// keep their blue tick and edited ones go back for review.
 	rows, err := tx.Query(ctx, `
-		DELETE FROM profile_experiences WHERE user_id = $1
-		RETURNING position, COALESCE(company_id, ''), title, work_type, start_month, COALESCE(end_month, ''),
-			is_current, promoted, description, verification`, userID)
+		DELETE FROM profile_experiences WHERE user_id = $1 RETURNING `+linkedColumns, userID)
 	if err != nil {
 		return err
 	}
@@ -249,16 +290,15 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 	// A company name that matches a registered company links to it, so the
 	// company can verify the entry (oldest company wins a name clash).
 	rows, err = tx.Query(ctx, `
-		INSERT INTO profile_experiences (user_id, position, company_id, company_name, title, work_type, start_month,
-			end_month, is_current, promoted, description)
+		INSERT INTO profile_experiences (user_id, position, company_id, company_name, work_type, work_arrangement,
+			location_id, start_month, end_month, is_current, roles)
 		SELECT $1, ord, (SELECT c.id FROM companies c WHERE lower(c.name) = lower(u.company) AND c.deleted_at IS NULL
 				ORDER BY c.created_at, c.id LIMIT 1),
-			company, title, kind, start, finish, cur, prom, descr
-		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bool[], $8::bool[], $9::text[])
-			WITH ORDINALITY AS u(company, title, kind, start, finish, cur, prom, descr, ord)
-		RETURNING position, COALESCE(company_id, ''), title, work_type, start_month, COALESCE(end_month, ''),
-			is_current, promoted, description, verification`,
-		userID, company, title, kind, start, end, current, promoted, desc)
+			company, kind, arrangement, loc, start, finish, cur, roles::jsonb
+		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::bool[], $9::text[])
+			WITH ORDINALITY AS u(company, kind, arrangement, loc, start, finish, cur, roles, ord)
+		RETURNING `+linkedColumns,
+		userID, company, kind, arrangement, location, start, end, current, roles)
 	if err != nil {
 		return err
 	}
@@ -275,6 +315,10 @@ func (r *ProfileRepository) Save(ctx context.Context, userID string, p *profiles
 	return tx.Commit(ctx)
 }
 
+// linkedColumns are what collectLinked reads back from a DELETE or INSERT.
+const linkedColumns = `position, COALESCE(company_id, ''), work_type, work_arrangement, COALESCE(location_id, ''),
+	start_month, COALESCE(end_month, ''), is_current, roles, verification`
+
 // collectLinked reads entries in position order (RETURNING has no ORDER BY).
 func collectLinked(rows pgx.Rows) ([]profiles.LinkedExperience, error) {
 	type row struct {
@@ -283,10 +327,13 @@ func collectLinked(rows pgx.Rows) ([]profiles.LinkedExperience, error) {
 	}
 	got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
 		var x row
+		var roles []byte
 		e := &x.e.Entry
-		err := r.Scan(&x.pos, &x.e.CompanyID, &e.Title, &e.Type, &e.Start, &e.End, &e.Current, &e.Promoted,
-			&e.Description, &x.e.Review)
-		return x, err
+		if err := r.Scan(&x.pos, &x.e.CompanyID, &e.Type, &e.WorkArrangement, &e.LocationID, &e.Start, &e.End,
+			&e.Current, &roles, &x.e.Review); err != nil {
+			return x, err
+		}
+		return x, json.Unmarshal(roles, &e.Roles)
 	})
 	if err != nil {
 		return nil, err
@@ -296,6 +343,30 @@ func collectLinked(rows pgx.Rows) ([]profiles.LinkedExperience, error) {
 		out[x.pos-1] = x.e // positions are 1..n
 	}
 	return out, nil
+}
+
+// profileLocations groups the location ids a profile refers to by the field
+// to blame when one is unknown.
+func profileLocations(p *profiles.Profile) map[string][]string {
+	out := map[string][]string{"preferred_locations": p.PreferredLocations}
+	if p.CurrentLocationID != "" {
+		out["current_location_id"] = []string{p.CurrentLocationID}
+	}
+	var worked []string
+	for _, e := range p.Experiences {
+		if e.LocationID != "" && !slices.Contains(worked, e.LocationID) {
+			worked = append(worked, e.LocationID)
+		}
+	}
+	out["experiences"] = worked
+	return out
+}
+
+func textOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func dateOrNil(s string) *time.Time {
@@ -322,7 +393,9 @@ func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (s
 func (r *ProfileRepository) Experience(ctx context.Context, userID string, index int) (ports.ExperienceLink, error) {
 	var x ports.ExperienceLink
 	err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(c.id, ''), e.title, e.start_month, e.verification FROM profile_experiences e
+		SELECT COALESCE(c.id, ''),
+			COALESCE((SELECT r->>'title' FROM jsonb_array_elements(e.roles) r ORDER BY r->>'start' DESC LIMIT 1), ''),
+			e.start_month, e.verification FROM profile_experiences e
 		LEFT JOIN companies c ON c.id = e.company_id AND c.deleted_at IS NULL
 		WHERE e.user_id = $1 AND e.position = $2`, userID, index+1).Scan(&x.CompanyID, &x.Title, &x.Start, &x.Review)
 	if errors.Is(err, pgx.ErrNoRows) {

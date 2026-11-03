@@ -27,8 +27,8 @@ const openListing = `j.status = 'active' AND j.is_visible AND j.tier <> 'Free'
 func (r *StatsRepository) Refresh(ctx context.Context) error {
 	// ponytail: full counts once a day; fine for the low-resource window, add
 	// running counters if these scans ever get slow.
-	// Users have no country of their own yet, so their profiles' locations
-	// stand in until the profile records a current work location.
+	// A user's country is their profile's current work location's country;
+	// profiles without one don't count.
 	_, err := r.pool.Exec(ctx, `
 		UPDATE platform_stats SET
 			registered_users = (SELECT COUNT(*) FROM users WHERE status = 'active'),
@@ -39,7 +39,7 @@ func (r *StatsRepository) Refresh(ctx context.Context) error {
 			companies = (SELECT COUNT(*) FROM companies WHERE deleted_at IS NULL),
 			open_jobs = (SELECT COUNT(*) FROM jobs j WHERE `+openListing+`),
 			countries_with_users = (SELECT COUNT(DISTINCT l.country_code)
-				FROM profiles p JOIN locations l ON l.id = ANY(p.location_ids)),
+				FROM profiles p JOIN locations l ON l.id = p.current_location_id),
 			countries_with_jobs_companies = (SELECT COUNT(*) FROM (
 				SELECT hq_country_code FROM companies WHERE deleted_at IS NULL AND hq_country_code IS NOT NULL
 				UNION SELECT l.country_code FROM jobs j JOIN locations l ON l.id = ANY(j.location_ids) WHERE `+openListing+`) cc),

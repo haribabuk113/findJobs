@@ -2,6 +2,7 @@ package reference
 
 import (
 	"context"
+	"time"
 
 	"findJobs/internal/domain/reference"
 )
@@ -32,6 +33,9 @@ type ReferenceService interface {
 	// RefreshRates fetches rates (3 attempts), stores them, re-normalises job
 	// salaries and publishes rates.json
 	RefreshRates(ctx context.Context) error
+	// RefreshRatesIfDue refreshes when the stored rates predate the latest
+	// refreshAt (HH:MM IST) at or before now; the scheduler polls it
+	RefreshRatesIfDue(ctx context.Context, refreshAt string, now time.Time) error
 	// ImportLocations replaces the location tree and publishes it
 	ImportLocations(ctx context.Context, locations []reference.Location) error
 	// PublishAll republishes every asset kind (unchanged ones are skipped)

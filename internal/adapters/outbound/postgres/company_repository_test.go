@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestCompanyLifecycleAndMemberRules(t *testing.T) {
 	}
 
 	// Non-admins can't edit, see members or the dashboard.
-	if _, err := repo.Update(ctx, slug, bob, testCompanyInput(t, slug), "IN"); err != companies.ErrNotAdmin {
+	if _, _, err := repo.Update(ctx, slug, bob, testCompanyInput(t, slug), "IN"); err != companies.ErrNotAdmin {
 		t.Errorf("non-admin update: want ErrNotAdmin, got %v", err)
 	}
 	if _, err := repo.Members(ctx, slug, bob, companies.StatusPending); err != companies.ErrNotAdmin {
@@ -103,7 +104,7 @@ func TestCompanyLifecycleAndMemberRules(t *testing.T) {
 	if err := repo.Offboard(ctx, slug, bob, bob); !companies.IsConflict(err) {
 		t.Errorf("offboarding the last admin: want ConflictError, got %v", err)
 	}
-	if _, err := repo.Update(ctx, slug, alice, testCompanyInput(t, slug), "IN"); err != companies.ErrNotAdmin {
+	if _, _, err := repo.Update(ctx, slug, alice, testCompanyInput(t, slug), "IN"); err != companies.ErrNotAdmin {
 		t.Errorf("past admin update: want ErrNotAdmin, got %v", err)
 	}
 
@@ -128,7 +129,7 @@ func TestCompanyLifecycleAndMemberRules(t *testing.T) {
 
 	// Slug change via update; search finds it by name and filters.
 	in := testCompanyInput(t, slug+"-new")
-	updated, err := repo.Update(ctx, slug, bob, in, "IN")
+	updated, _, err := repo.Update(ctx, slug, bob, in, "IN")
 	if err != nil || updated.Slug != slug+"-new" {
 		t.Fatalf("update: %+v, %v", updated, err)
 	}
@@ -192,5 +193,75 @@ func TestConcurrentLeaveKeepsAnAdmin(t *testing.T) {
 	pool.QueryRow(ctx, `SELECT COUNT(*) FROM company_members WHERE company_id = $1 AND role = 'admin' AND status = 'current'`, c.ID).Scan(&admins)
 	if admins != 1 {
 		t.Fatalf("%d admins left, want 1", admins)
+	}
+}
+
+// Company search by city matches the HQ or any branch; product images survive
+// a save only when the card sends back an image the company already had.
+func TestCitySearchAndProductImages(t *testing.T) {
+	pool := testPool(t)
+	repo := NewCompanyRepository(pool)
+	ctx := context.Background()
+	admin, stranger := testUser(t, pool, "pi-admin"), testUser(t, pool, "pi-stranger")
+	slug := "pi-" + uuid.NewString()[:8]
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM companies WHERE slug = $1`, slug) })
+	in := testCompanyInput(t, slug)
+	in.BranchLocationIDs = []string{"1275339"}
+	in.Products = []companies.Product{{Name: "Probe", About: "Finds bugs."}, {Name: "Lens", About: "Sees them."}}
+	if _, err := repo.Create(ctx, in, "IN", admin); err != nil {
+		t.Fatal(err)
+	}
+
+	search := func(ids []string) int {
+		c := &companies.SearchCriteria{Query: in.Name, LocationIDs: ids}
+		if err := c.Normalize(); err != nil {
+			t.Fatal(err)
+		}
+		res, err := repo.Search(ctx, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Total
+	}
+	for ids, want := range map[string]int{"1277333": 1, "1275339": 1, "1277333,1275339": 1, "999999": 0} {
+		if got := search(strings.Split(ids, ",")); got != want {
+			t.Errorf("cities %s (HQ 1277333, branch 1275339): %d, want %d", ids, got, want)
+		}
+	}
+	if got := search(nil); got != 1 {
+		t.Errorf("no city filter: %d", got)
+	}
+
+	if _, err := repo.SetProductImage(ctx, slug, stranger, 0, "img/x.png"); err != companies.ErrNotAdmin {
+		t.Errorf("stranger: %v", err)
+	}
+	if _, err := repo.SetProductImage(ctx, slug, admin, 5, "img/x.png"); !companies.IsNotFound(err) {
+		t.Errorf("no product 5: %v", err)
+	}
+	if old, err := repo.SetProductImage(ctx, slug, admin, 0, "img/a.png"); err != nil || old != "" {
+		t.Fatalf("first image: %q %v", old, err)
+	}
+	c, _ := repo.GetBySlug(ctx, slug, "")
+	if c.Products[0].ImageURL == nil || *c.Products[0].ImageURL != "/api/v1/files/img/a.png" || c.Products[1].ImageURL != nil {
+		t.Fatalf("image url: %+v", c.Products)
+	}
+
+	// Reordered with its image: kept. Another card claiming a foreign key: not stored.
+	stolen := "/api/v1/files/img/someone-elses.png"
+	in.Products = []companies.Product{{Name: "Lens", About: "Sees them.", ImageURL: &stolen}, c.Products[0]}
+	updated, removed, err := repo.Update(ctx, slug, admin, in, "IN")
+	if err != nil || len(removed) != 0 || updated.Products[0].ImageURL != nil ||
+		updated.Products[1].ImageURL == nil || *updated.Products[1].ImageURL != "/api/v1/files/img/a.png" {
+		t.Fatalf("reorder: %+v removed %v %v", updated.Products, removed, err)
+	}
+	// Dropped from the document: its key comes back for deletion.
+	in.Products = []companies.Product{{Name: "Lens", About: "Sees them."}}
+	if _, removed, err = repo.Update(ctx, slug, admin, in, "IN"); err != nil || len(removed) != 1 || removed[0] != "img/a.png" {
+		t.Fatalf("drop: removed %v %v", removed, err)
+	}
+	// Replacing returns the old key; "" removes.
+	repo.SetProductImage(ctx, slug, admin, 0, "img/b.png")
+	if old, err := repo.SetProductImage(ctx, slug, admin, 0, ""); err != nil || old != "img/b.png" {
+		t.Fatalf("remove: %q %v", old, err)
 	}
 }

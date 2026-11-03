@@ -11,6 +11,7 @@ import (
 
 	"findJobs/internal/domain/companies"
 	"findJobs/internal/domain/jobs"
+	"findJobs/internal/pkg/logger"
 	"findJobs/internal/ports"
 )
 
@@ -210,7 +211,10 @@ func (r *RecruitingRepository) Repost(ctx context.Context, id, userID string) er
 	// Manual: reposting restarts the 30-day window. A company job can only be
 	// reposted while the poster is still a current member.
 	tag, err := r.pool.Exec(ctx, `
-		UPDATE jobs j SET status = 'active', posted_at = NOW(), is_visible = (j.tier = 'Premium'), updated_at = NOW()
+		UPDATE jobs j SET status = 'active', posted_at = NOW(), is_visible = (j.tier = 'Premium'), updated_at = NOW(),
+			-- Hidden jobs miss the FX re-normalisation, so bring the INR amounts up to today's rate.
+			normalized_inr_amount = COALESCE(ROUND(j.salary_max * (SELECT rate_to_inr FROM exchange_rates WHERE currency = j.currency), 2), j.normalized_inr_amount),
+			salary_min_inr = COALESCE(ROUND(j.salary_min * (SELECT rate_to_inr FROM exchange_rates WHERE currency = j.currency), 2), j.salary_min_inr)
 		WHERE j.id = $1 AND j.recruiter_id = $2 AND j.status <> 'pending_payment' AND (j.company_id IS NULL OR EXISTS (
 			SELECT 1 FROM company_members m JOIN companies c ON c.id = m.company_id
 			WHERE m.company_id = j.company_id AND m.user_id = $2 AND m.status = 'current' AND c.deleted_at IS NULL))`,
@@ -223,6 +227,23 @@ func (r *RecruitingRepository) Repost(ctx context.Context, id, userID string) er
 			&jobs.ForbiddenError{Message: "you're no longer a member of this job's company, so it can't be reposted"})
 	}
 	return nil
+}
+
+// ExpireJobs is the daily job for the manual's 30-day public cap: active
+// listings posted more than 30 days ago get is_visible = false. Their status
+// stays 'active' (the manage list derives "expired" from posted_at), so a
+// repost simply makes them visible again. Readers that also check posted_at
+// keep doing so; this flag is what the hard-filter engine and FX refresh use.
+func ExpireJobs(pool *pgxpool.Pool) func(context.Context) error {
+	return func(ctx context.Context) error {
+		tag, err := pool.Exec(ctx, `UPDATE jobs SET is_visible = FALSE, updated_at = NOW()
+			WHERE is_visible AND status = 'active' AND posted_at < NOW() - INTERVAL '30 days'`)
+		if err == nil && tag.RowsAffected() > 0 {
+			l := logger.Get()
+			l.Info().Int64("hidden", tag.RowsAffected()).Msg("expired jobs past the 30-day window")
+		}
+		return err
+	}
 }
 
 // state derives active / closed / expired (past the 30-day public window).

@@ -42,6 +42,9 @@ func (q *query) add(clause string, values ...any) {
 	q.where = append(q.where, clause)
 }
 
+// titleSearchSQL is the expression idx_jobs_title_fts indexes (migration 025).
+const titleSearchSQL = `to_tsvector('english', j.title)`
+
 // anyOf adds "column = ANY(values)" (OR within one category) when values is set.
 func (q *query) anyOf(column string, values []string) {
 	if len(values) > 0 {
@@ -58,10 +61,18 @@ func (r *JobRepository) Search(ctx context.Context, c *jobs.SearchCriteria, user
 		q.add("NOT EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id AND a.user_id = ?::uuid)", userID)
 	}
 
-	// Every keyword must appear in the title (requirements: search is by
-	// designation/title only, never the description).
-	for _, word := range strings.Fields(strings.ToLower(c.Query)) {
-		q.add("j.title ILIKE ?", "%"+escapeLike(word)+"%")
+	// Title only, never the description (requirements: search is by
+	// designation/title). A job matches when every keyword appears in its
+	// title, or when the title holds every word's English stem, so "Product
+	// Manager" also finds "Director of Product Management" (newer doc §4).
+	// The substring side keeps partial words working while typing ("prod").
+	if words := strings.Fields(strings.ToLower(c.Query)); len(words) > 0 {
+		like := make([]string, len(words))
+		for i, word := range words {
+			like[i] = "j.title ILIKE " + q.arg("%"+escapeLike(word)+"%")
+		}
+		q.add("((" + strings.Join(like, " AND ") + ") OR " + titleSearchSQL + " @@ plainto_tsquery('english', " +
+			q.arg(c.Query) + "))")
 	}
 	if c.LocationText != "" {
 		if strings.EqualFold(c.LocationText, "remote") {

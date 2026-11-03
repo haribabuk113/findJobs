@@ -21,12 +21,16 @@ type CompanyRepository interface {
 	SlugTaken(ctx context.Context, slug string) (bool, error)
 	// Search returns one page of live companies
 	Search(ctx context.Context, c *companies.SearchCriteria) (*companies.SearchResult, error)
-	// Update replaces the company document (admin only)
-	Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (*companies.Company, error)
+	// Update replaces the company document (admin only). removed are the
+	// product image keys no product kept, for the caller to delete.
+	Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (c *companies.Company, removed []string, err error)
 	// Delete soft-deletes the company, hides its jobs and ends memberships (admin only)
 	Delete(ctx context.Context, slug, userID string) error
 	// SetImage stores a logo or banner key (admin only) and returns the replaced key
 	SetImage(ctx context.Context, slug, userID, kind, key string) (string, error)
+	// SetProductImage stores the image key ("" removes it) of the product at
+	// index (admin only), returning the replaced key; NotFoundError without one.
+	SetProductImage(ctx context.Context, slug, userID string, index int, key string) (string, error)
 
 	// Members lists members with the given status (admin only)
 	Members(ctx context.Context, slug, userID, status string) ([]companies.Member, error)

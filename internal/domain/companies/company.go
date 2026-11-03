@@ -63,11 +63,25 @@ type Input struct {
 	Benefits          []Benefit         `json:"benefits"`
 }
 
-// Product is one product/service showcase card.
+// Product is one product/service showcase card. ImageURL is set with
+// PUT /companies/{slug}/products/{index}/image; a save that sends a card's
+// image_url back keeps that image, and one that drops it removes the image.
 type Product struct {
-	Name  string `json:"name"`
-	About string `json:"about"`
-	URL   string `json:"url"`
+	Name     string  `json:"name"`
+	About    string  `json:"about"`
+	URL      string  `json:"url"`
+	ImageURL *string `json:"image_url"`
+}
+
+// MaxProductImageBytes caps product images (manual "Section E": up to 1 MB).
+const MaxProductImageBytes = 1 << 20
+
+// FileKey is the storage key behind a FileURL ("" when url isn't one).
+func FileKey(url *string) string {
+	if url == nil || !strings.HasPrefix(*url, "/api/v1/files/img/") {
+		return ""
+	}
+	return strings.TrimPrefix(*url, "/api/v1/files/")
 }
 
 // Benefit is one workplace perk.
@@ -118,12 +132,15 @@ type Summary struct {
 // SearchCriteria filters the company directory (manual: name search plus
 // structured filters).
 type SearchCriteria struct {
-	Query      string   `json:"query"`
-	Countries  []string `json:"countries"`
-	Industries []string `json:"industries"`
-	Sizes      []string `json:"sizes"`
-	Page       int      `json:"page"`
-	PageSize   int      `json:"page_size"`
+	Query     string   `json:"query"`
+	Countries []string `json:"countries"`
+	// LocationIDs are cities (GeoNames ids): a company matches when its HQ or
+	// any branch is one of them (newer doc §5 "Company Filters").
+	LocationIDs []string `json:"location_ids"`
+	Industries  []string `json:"industries"`
+	Sizes       []string `json:"sizes"`
+	Page        int      `json:"page"`
+	PageSize    int      `json:"page_size"`
 }
 
 // SearchResult is one page of companies.
@@ -415,6 +432,14 @@ func (c *SearchCriteria) Normalize() error {
 			return invalid("countries", "countries must be ISO codes like IN")
 		}
 	}
+	if len(c.LocationIDs) > 200 {
+		return invalid("location_ids", "choose at most 200 cities")
+	}
+	for _, id := range c.LocationIDs {
+		if !geonameID.MatchString(id) {
+			return invalid("location_ids", "unknown location")
+		}
+	}
 	for i, industry := range c.Industries {
 		c.Industries[i] = strings.ToLower(strings.TrimSpace(industry))
 		if c.Industries[i] == "" || utf8.RuneCountInString(c.Industries[i]) > 25 {
@@ -435,7 +460,7 @@ func (c *SearchCriteria) Normalize() error {
 	if c.Page < 1 || c.Page > 1000 || c.PageSize < 1 || c.PageSize > 50 {
 		return invalid("page", "page must be 1-1000 and page_size 1-50")
 	}
-	for _, list := range []*[]string{&c.Countries, &c.Industries, &c.Sizes} {
+	for _, list := range []*[]string{&c.Countries, &c.Industries, &c.Sizes, &c.LocationIDs} {
 		if *list == nil {
 			*list = []string{}
 		}

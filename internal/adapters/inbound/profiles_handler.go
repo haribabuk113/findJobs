@@ -30,6 +30,7 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser
 	me := api.Group("/profile/me", requireUser)
 	me.GET("", h.Mine)
 	me.PUT("", h.Save)
+	me.GET("/slug-availability", h.SlugAvailability)
 	me.PUT("/photo", h.Photo)
 	me.DELETE("/photo", h.DeletePhoto)
 	me.POST("/experiences/:index/verification", h.RequestVerification)
@@ -119,6 +120,24 @@ func (h *ProfileHandler) RemoveSkill(ctx *gin.Context) {
 func (h *ProfileHandler) Mine(ctx *gin.Context) {
 	p, err := h.service.Mine(ctx, ctx.GetString(userIDKey))
 	respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
+}
+
+// SlugAvailability handles GET /profile/me/slug-availability?slug=: whether a
+// profile handle is free (the user's own counts as free). 400 for a bad or
+// reserved handle.
+//
+//	@Summary	Is a profile handle free?
+//	@ID			checkProfileSlug
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		slug	query	string	true	"Handle to check"
+//	@Success	200	{object}	adapters.Response{data=slugAvailability}
+//	@Failure	400,401,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/slug-availability [get]
+func (h *ProfileHandler) SlugAvailability(ctx *gin.Context) {
+	available, err := h.service.SlugAvailable(ctx, ctx.GetString(userIDKey), ctx.Query("slug"))
+	respond(ctx, http.StatusOK, "Slug checked", slugAvailability{Available: available}, err)
 }
 
 // Save handles PUT /profile/me: the whole profile document.

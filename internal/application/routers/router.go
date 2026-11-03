@@ -134,6 +134,18 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 		postgres.NewRatesRepository(db), postgres.NewAssetRepository(db), fx.NewClient(cfg.FXEndpoint))
 	inbound.RegisterReferenceRoutes(api.Group("/assets"), api.Group("/admin"), inbound.NewReferenceHandler(referenceService), authHandler.RequirePlatformAdmin())
 	bg.Go(func(ctx context.Context) { startReferenceData(ctx, referenceService) })
+	// Daily FX refresh at the admin's fx_refresh_time (05:00 IST by default).
+	// Polled every 15 minutes, so a changed time applies without a restart, an
+	// empty rates table is filled at startup, and a failed refresh is retried.
+	scheduler.Every(bg, db, "fx-refresh", 15*time.Minute, func(ctx context.Context) error {
+		s, err := settingsRepo.Get(ctx)
+		if err != nil {
+			return err
+		}
+		return referenceService.RefreshRatesIfDue(ctx, s.FXRefreshTime, time.Now())
+	})
+	// Daily at 00:05 IST (and at startup): hide listings past the 30-day public window.
+	scheduler.Daily(bg, db, "jobs-expiry", 0, 5, postgres.ExpireJobs(db))
 
 	// Wallets and top-ups. Without Razorpay keys, wallets read as usual and top-ups return 503.
 	var gateway ports.PaymentGateway
@@ -172,20 +184,13 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	return router, nil
 }
 
-// startReferenceData makes sure every asset kind has a published file, and
-// fetches exchange rates once if none exist yet (the daily refresh is a
-// scheduled job). Runs in the background so a slow provider can't delay startup.
+// startReferenceData makes sure every asset kind has a published file (rates
+// come from the fx-refresh job). Runs in the background so startup isn't delayed.
 func startReferenceData(ctx context.Context, service appreference.ReferenceService) {
-	log := logger.Get()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if err := service.PublishAll(ctx); err != nil {
+		log := logger.Get()
 		log.Error().Err(err).Msg("publishing reference files failed")
-		return
-	}
-	if manifest, err := service.Manifest(ctx); err == nil {
-		if _, ok := manifest["rates"]; !ok {
-			service.RefreshRatesAsync()
-		}
 	}
 }

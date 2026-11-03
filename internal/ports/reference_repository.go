@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"findJobs/internal/domain/reference"
 )
@@ -38,6 +39,8 @@ type RatesRepository interface {
 	Replace(ctx context.Context, rates reference.Rates) error
 	// All returns the stored rates
 	All(ctx context.Context) (reference.Rates, error)
+	// UpdatedAt is when the rates were last replaced (zero when there are none)
+	UpdatedAt(ctx context.Context) (time.Time, error)
 }
 
 // AssetRepository defines the outbound port for published static JSON files.

@@ -173,6 +173,44 @@ func (s *service) RefreshRatesAsync() bool {
 	return started
 }
 
+var ist = time.FixedZone("IST", 5*60*60+30*60)
+
+// RefreshRatesIfDue is the daily FX job (manual "Salary": 05:00 IST, set by
+// the admin as fx_refresh_time). Polled by the scheduler, it refreshes when the
+// stored rates predate the latest scheduled time, so a changed setting, a
+// missed run during downtime or an empty table all heal on the next poll, and
+// a failed refresh is retried on the next one. It skips while an admin-started
+// refresh is running.
+func (s *service) RefreshRatesIfDue(ctx context.Context, refreshAt string, now time.Time) error {
+	due, err := lastDue(now, refreshAt)
+	if err != nil {
+		return err
+	}
+	updated, err := s.rates.UpdatedAt(ctx)
+	if err != nil || !updated.Before(due) {
+		return err
+	}
+	if !s.refreshing.CompareAndSwap(false, true) {
+		return nil
+	}
+	defer s.refreshing.Store(false)
+	return s.RefreshRates(ctx)
+}
+
+// lastDue is the most recent hh:mm IST at or before now.
+func lastDue(now time.Time, hhmm string) (time.Time, error) {
+	t, err := time.Parse("15:04", hhmm)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("fx_refresh_time %q: %w", hhmm, err)
+	}
+	n := now.In(ist)
+	due := time.Date(n.Year(), n.Month(), n.Day(), t.Hour(), t.Minute(), 0, 0, ist)
+	if due.After(n) {
+		due = due.AddDate(0, 0, -1)
+	}
+	return due, nil
+}
+
 // logFailure logs background work that failed, except a cancellation by
 // shutdown, which is expected: the transaction rolled back and the work is
 // redone later (the next refresh, or PublishAll at the next start).

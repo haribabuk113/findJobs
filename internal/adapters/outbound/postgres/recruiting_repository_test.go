@@ -78,6 +78,53 @@ func TestJobVisibility(t *testing.T) {
 	}
 }
 
+// The daily expiry hides listings past 30 days and only those; a repost shows
+// the job again with its INR amounts at today's rate.
+func TestExpireJobsAndRepost(t *testing.T) {
+	pool := testPool(t)
+	repo := &RecruitingRepository{pool: pool}
+	ctx := context.Background()
+	owner := testUser(t, pool, "expiry owner")
+	d, _, _ := NewTaxonomyRepository(pool).Resolve(ctx, reference.Designation, names(t, "Test role"), owner)
+	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM designations WHERE id = $1`, d[0].ID) })
+
+	old, fresh := testJob(t, repo, owner, d[0].ID, nil, true), testJob(t, repo, owner, d[0].ID, nil, true)
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET posted_at = NOW() - INTERVAL '31 days', normalized_inr_amount = 1 WHERE id = $1`, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	visible := func(id string) (v bool) {
+		if err := pool.QueryRow(ctx, `SELECT is_visible FROM jobs WHERE id = $1`, id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	for range 2 { // idempotent
+		if err := ExpireJobs(pool)(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if visible(old.ID) || !visible(fresh.ID) {
+		t.Fatalf("after expiry: old visible=%v (want false), fresh visible=%v (want true)", visible(old.ID), visible(fresh.ID))
+	}
+	if mine, err := repo.Detail(ctx, old.ID, false, owner); err != nil || mine.Status != jobs.StateExpired {
+		t.Errorf("owner sees expired job: %+v, %v", mine, err)
+	}
+
+	if err := repo.Repost(ctx, old.ID, owner); err != nil {
+		t.Fatal(err)
+	}
+	if !visible(old.ID) {
+		t.Error("reposted job should be visible")
+	}
+	var inr float64
+	var rate *float64
+	pool.QueryRow(ctx, `SELECT rate_to_inr::float8 FROM exchange_rates WHERE currency = 'INR'`).Scan(&rate)
+	pool.QueryRow(ctx, `SELECT normalized_inr_amount::float8 FROM jobs WHERE id = $1`, old.ID).Scan(&inr)
+	if rate != nil && inr != 100000**rate {
+		t.Errorf("reposted INR amount = %v, want %v", inr, 100000**rate)
+	}
+}
+
 // Merging and deleting terms rewrite the jobs that use them, keeping order.
 func TestTermChangesRepointJobs(t *testing.T) {
 	pool := testPool(t)

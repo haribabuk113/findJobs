@@ -23,6 +23,8 @@ type CompanyService interface {
 	Delete(ctx context.Context, userID, slug string) error
 	// SetImage replaces the logo or banner (admins); kind is "logo" or "banner"
 	SetImage(ctx context.Context, userID, slug, kind, contentType string, data []byte) (*companies.Company, error)
+	// SetProductImage replaces a product card's image (admins); empty data removes it
+	SetProductImage(ctx context.Context, userID, slug string, index int, contentType string, data []byte) (*companies.Company, error)
 	// File returns an uploaded image
 	File(ctx context.Context, key string) ([]byte, string, error)
 

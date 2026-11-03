@@ -74,18 +74,37 @@ func TestNormalizeRejects(t *testing.T) {
 
 func TestSearchCriteriaNormalize(t *testing.T) {
 	c := SearchCriteria{Industries: []string{" Fintech "}}
-	if err := c.Normalize(); err != nil || c.Page != 1 || c.PageSize != 20 || c.Industries[0] != "fintech" {
+	if err := c.Normalize(); err != nil || c.Page != 1 || c.PageSize != 20 || c.Industries[0] != "fintech" ||
+		c.LocationIDs == nil {
 		t.Fatalf("defaults: %+v, %v", c, err)
 	}
 	for name, bad := range map[string]SearchCriteria{
-		"country name": {Countries: []string{"India"}},
-		"unknown size": {Sizes: []string{"tiny"}},
-		"page size":    {PageSize: 51},
-		"long query":   {Query: strings.Repeat("q", 101)},
+		"country name":    {Countries: []string{"India"}},
+		"city name":       {LocationIDs: []string{"Bengaluru"}},
+		"too many cities": {LocationIDs: make([]string, 201)},
+		"unknown size":    {Sizes: []string{"tiny"}},
+		"page size":       {PageSize: 51},
+		"long query":      {Query: strings.Repeat("q", 101)},
 	} {
 		if err := bad.Normalize(); !IsValidation(err) {
 			t.Errorf("%s: want ValidationError, got %v", name, err)
 		}
+	}
+}
+
+func TestFileKey(t *testing.T) {
+	for url, want := range map[string]string{
+		"/api/v1/files/img/a.png":  "img/a.png",
+		"https://evil.example/a":   "",
+		"/api/v1/files/../secrets": "",
+		"img/a.png":                "",
+	} {
+		if got := FileKey(&url); got != want {
+			t.Errorf("FileKey(%q) = %q, want %q", url, got, want)
+		}
+	}
+	if FileKey(nil) != "" {
+		t.Error("nil url")
 	}
 }
 

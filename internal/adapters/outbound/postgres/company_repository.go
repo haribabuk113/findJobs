@@ -61,7 +61,7 @@ func (r *CompanyRepository) Create(ctx context.Context, in *companies.Input, hqC
 	if err != nil {
 		return nil, err
 	}
-	if err := replaceShowcase(ctx, tx, id, in); err != nil {
+	if _, err := replaceShowcase(ctx, tx, id, in); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO company_members (company_id, user_id, role, status) VALUES ($1, $2, 'admin', 'current')`, id, userID); err != nil {
@@ -94,11 +94,18 @@ func (r *CompanyRepository) GetBySlug(ctx context.Context, slug, viewerID string
 	}
 	c.LogoURL, c.BannerURL = companies.FileURL(logo), companies.FileURL(banner)
 
-	rows, err := r.pool.Query(ctx, `SELECT name, about, url FROM company_products WHERE company_id = $1 ORDER BY position`, c.ID)
+	rows, err := r.pool.Query(ctx, `SELECT name, about, url, image_key FROM company_products WHERE company_id = $1 ORDER BY position`, c.ID)
 	if err != nil {
 		return nil, err
 	}
-	if c.Products, err = pgx.CollectRows(rows, pgx.RowToStructByPos[companies.Product]); err != nil {
+	c.Products, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (companies.Product, error) {
+		var p companies.Product
+		var key *string
+		err := row.Scan(&p.Name, &p.About, &p.URL, &key)
+		p.ImageURL = companies.FileURL(key)
+		return p, err
+	})
+	if err != nil {
 		return nil, err
 	}
 	rows, err = r.pool.Query(ctx, `SELECT title, details, icon FROM company_benefits WHERE company_id = $1 ORDER BY position`, c.ID)
@@ -123,12 +130,13 @@ func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCrite
 			AND ($1 = '' OR name ILIKE '%' || $1 || '%')
 			AND (cardinality($2::text[]) = 0 OR hq_country_code = ANY($2))
 			AND (cardinality($3::text[]) = 0 OR EXISTS (SELECT 1 FROM unnest(industries) i WHERE lower(i) = ANY($3)))
-			AND (cardinality($4::text[]) = 0 OR size = ANY($4))`
-	filters := []any{escapeLike(c.Query), c.Countries, c.Industries, c.Sizes}
+			AND (cardinality($4::text[]) = 0 OR size = ANY($4))
+			AND (COALESCE(cardinality($5::text[]), 0) = 0 OR hq_location_id = ANY($5) OR branch_location_ids && $5)`
+	filters := []any{escapeLike(c.Query), c.Countries, c.Industries, c.Sizes, c.LocationIDs}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, slug, name, tagline, size, industries, hq_location_id, hq_country_code, logo_key, COUNT(*) OVER()
 		`+from+`
-		ORDER BY lower(name), id LIMIT $5 OFFSET $6`,
+		ORDER BY lower(name), id LIMIT $6 OFFSET $7`,
 		append(filters, c.PageSize, (c.Page-1)*c.PageSize)...)
 	if err != nil {
 		return nil, err
@@ -155,7 +163,8 @@ func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCrite
 	return result, err
 }
 
-func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (*companies.Company, error) {
+func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (*companies.Company, []string, error) {
+	var removed []string
 	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
 		_, err := tx.Exec(ctx, `
 			UPDATE companies SET slug = $2, name = $3, sector = $4, size = $5, tagline = $6, industries = $7,
@@ -170,12 +179,32 @@ func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in 
 		if err != nil {
 			return err
 		}
-		return replaceShowcase(ctx, tx, companyID, in)
+		removed, err = replaceShowcase(ctx, tx, companyID, in)
+		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return r.GetBySlug(ctx, in.Slug, userID)
+	c, err := r.GetBySlug(ctx, in.Slug, userID)
+	return c, removed, err
+}
+
+func (r *CompanyRepository) SetProductImage(ctx context.Context, slug, userID string, index int, key string) (string, error) {
+	var old *string
+	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
+		err := tx.QueryRow(ctx, `
+			UPDATE company_products p SET image_key = NULLIF($3, '') FROM company_products prev
+			WHERE p.company_id = $1 AND p.position = $2 AND prev.company_id = p.company_id AND prev.position = p.position
+			RETURNING prev.image_key`, companyID, index, key).Scan(&old)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &companies.NotFoundError{Message: "product not found"}
+		}
+		return err
+	})
+	if err != nil || old == nil {
+		return "", err
+	}
+	return *old, nil
 }
 
 func (r *CompanyRepository) Delete(ctx context.Context, slug, userID string) error {
@@ -433,25 +462,50 @@ func (r *CompanyRepository) SetAllowance(ctx context.Context, slug, adminID, mem
 	})
 }
 
-func replaceShowcase(ctx context.Context, tx pgx.Tx, companyID string, in *companies.Input) error {
-	for _, q := range []string{`DELETE FROM company_products WHERE company_id = $1`, `DELETE FROM company_benefits WHERE company_id = $1`} {
-		if _, err := tx.Exec(ctx, q, companyID); err != nil {
-			return err
+// replaceShowcase rewrites the product and benefit lists. A product keeps an
+// image only when the image_url it sends back is one this company's products
+// already had (so a key can't be borrowed from elsewhere); the keys no product
+// keeps are returned so their files can be deleted.
+func replaceShowcase(ctx context.Context, tx pgx.Tx, companyID string, in *companies.Input) ([]string, error) {
+	rows, err := tx.Query(ctx, `DELETE FROM company_products WHERE company_id = $1 RETURNING image_key`, companyID)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[*string])
+	if err != nil {
+		return nil, err
+	}
+	owned := map[string]bool{}
+	for _, k := range keys {
+		if k != nil {
+			owned[*k] = true
 		}
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM company_benefits WHERE company_id = $1`, companyID); err != nil {
+		return nil, err
+	}
 	for i, p := range in.Products {
-		if _, err := tx.Exec(ctx, `INSERT INTO company_products (company_id, position, name, about, url) VALUES ($1, $2, $3, $4, $5)`,
-			companyID, i, p.Name, p.About, p.URL); err != nil {
-			return err
+		var image *string
+		if key := companies.FileKey(p.ImageURL); owned[key] {
+			image = &key
+			delete(owned, key) // one card per image
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO company_products (company_id, position, name, about, url, image_key) VALUES ($1, $2, $3, $4, $5, $6)`,
+			companyID, i, p.Name, p.About, p.URL, image); err != nil {
+			return nil, err
 		}
 	}
 	for i, b := range in.Benefits {
 		if _, err := tx.Exec(ctx, `INSERT INTO company_benefits (company_id, position, title, details, icon) VALUES ($1, $2, $3, $4, $5)`,
 			companyID, i, b.Title, b.Details, b.Icon); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	removed := make([]string, 0, len(owned))
+	for k := range owned {
+		removed = append(removed, k)
+	}
+	return removed, nil
 }
 
 func isUniqueViolation(err error) bool {

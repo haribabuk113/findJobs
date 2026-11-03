@@ -1,6 +1,9 @@
 package profiles
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func validProfile() *Profile {
 	return &Profile{
@@ -8,7 +11,10 @@ func validProfile() *Profile {
 		WorkTypes: []string{"Full-time", "Full-time"}, PreferredLocations: []string{"1277333"},
 		TargetRoles: []string{"Product Designer", " Product Designer "},
 		SkillGroups: []SkillGroup{{Name: "Core", Skills: []string{"Figma", "figma", " Research "}}, {Name: "Empty", Skills: []string{" "}}},
-		Experiences: []Experience{{Company: "Forma", Title: "Designer", Type: "Full-time", Start: "2023-03", End: "2020-01", Current: true, Verification: Verified}},
+		Experiences: []Experience{{Company: "Forma", Type: "Full-time", Start: "2023-03", End: "2020-01", Current: true,
+			Verification: Verified, Location: "injected", Roles: []Role{
+				{Title: "Designer", Start: "2023-03", End: "2024-05", Achievements: []string{" Shipped v2 ", ""}},
+				{Title: "Senior Designer", Start: "2024-06", Promoted: true}}}},
 		Details: Details{
 			SocialLinks:    []SocialLink{{Platform: "LinkedIn", URL: "https://linkedin.com/in/asha"}},
 			Authorizations: []Authorization{{Country: "India", Type: "Citizen", From: "2001-01-01", Until: "2000-01-01", Indefinite: true}},
@@ -32,8 +38,14 @@ func TestNormalizeCleansAndClearsReadOnlyFields(t *testing.T) {
 	if len(p.SkillGroups) != 1 || len(p.SkillGroups[0].Skills) != 2 || p.SkillGroups[0].Skills[1] != "Research" {
 		t.Fatalf("skills: %+v", p.SkillGroups) // case-insensitive dedupe, empty group dropped
 	}
-	if e := p.Experiences[0]; e.End != "" || e.Verification != "" {
-		t.Fatalf("current job keeps no end month and verification is read-only: %+v", e)
+	if e := p.Experiences[0]; e.End != "" || e.Verification != "" || e.Location != "" {
+		t.Fatalf("current job keeps no end month; verification and location are read-only: %+v", e)
+	}
+	if r := p.Experiences[0].Roles; len(r[0].Achievements) != 1 || r[0].Achievements[0] != "Shipped v2" || r[1].End != "" {
+		t.Fatalf("roles: achievements cleaned, the ongoing role keeps no end: %+v", r)
+	}
+	if got := p.Experiences[0].LatestTitle(); got != "Senior Designer" {
+		t.Fatalf("latest title %q", got)
 	}
 	if a := p.Authorizations[0]; a.Until != "" {
 		t.Fatalf("indefinite authorization keeps no expiry: %+v", a)
@@ -74,6 +86,19 @@ func TestNormalizeRejects(t *testing.T) {
 		"experience type":     func(p *Profile) { p.Experiences[0].Type = "Nap" },
 		"experience start":    func(p *Profile) { p.Experiences[0].Start = "2023" },
 		"ends before start":   func(p *Profile) { p.Experiences[0].Current, p.Experiences[0].End = false, "2022-01" },
+		"no roles":            func(p *Profile) { p.Experiences[0].Roles = nil },
+		"untitled role":       func(p *Profile) { p.Experiences[0].Roles[0].Title = "" },
+		"role before job":     func(p *Profile) { p.Experiences[0].Roles[0].Start = "2023-01" },
+		"role after job ends": func(p *Profile) { p.Experiences[0].Current, p.Experiences[0].End = false, "2024-03" },
+		"role ends early":     func(p *Profile) { p.Experiences[0].Roles[0].End = "2023-01" },
+		"html achievement":    func(p *Profile) { p.Experiences[0].Roles[0].Achievements = []string{"<b>x</b>"} },
+		"arrangement":         func(p *Profile) { p.Experiences[0].WorkArrangement = "Moon" },
+		"experience location": func(p *Profile) { p.Experiences[0].LocationID = "bengaluru" },
+		"current location":    func(p *Profile) { p.CurrentLocationID = "x1" },
+		"current arrangement": func(p *Profile) { p.CurrentWorkArrangement = "Remote or hybrid" },
+		"current work type":   func(p *Profile) { p.CurrentWorkType = "Nap" },
+		"long grade":          func(p *Profile) { p.Education = []Education{{Degree: "BSc", Grade: strings.Repeat("A", 51)}} },
+		"html in education":   func(p *Profile) { p.Education = []Education{{Degree: "BSc", Description: "<i>x</i>"}} },
 		"social link scheme":  func(p *Profile) { p.SocialLinks[0].URL = "javascript:alert(1)" },
 		"authorization dates": func(p *Profile) { p.Authorizations[0].Indefinite = false },
 		"empty education":     func(p *Profile) { p.Education = []Education{{Field: "Design"}} },
@@ -133,8 +158,34 @@ func TestPrivacyDefaultsAndAvailability(t *testing.T) {
 	}
 }
 
+// Older clients send flat entries and a language proficiency; both still save.
+func TestLegacyInput(t *testing.T) {
+	p := validProfile()
+	p.Experiences = []Experience{{Company: "Forma", Type: "Full-time", Start: "2023-03", End: "2024-01",
+		LegacyTitle: "Designer", LegacyPromoted: true, LegacyDescription: "Did things"}}
+	p.Languages = []Language{{Name: "Tamil", LegacyProficiency: "Native"}, {Name: "Hindi", Speak: true}}
+	p.Education = []Education{{Institution: "IIT", Grade: " 8.9 CGPA ", Achievements: []string{"Gold medal", " "}}}
+	if err := p.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	e := p.Experiences[0]
+	want := Role{Title: "Designer", Start: "2023-03", End: "2024-01", Promoted: true, Responsibilities: "Did things"}
+	if len(e.Roles) != 1 || e.Roles[0].Title != want.Title || e.Roles[0].End != want.End || !e.Roles[0].Promoted ||
+		e.Roles[0].Responsibilities != want.Responsibilities || e.LegacyTitle != "" || e.LegacyDescription != "" {
+		t.Fatalf("flat entry not turned into one role: %+v", e)
+	}
+	if l := p.Languages; !(l[0].Read && l[0].Write && l[0].Speak) || l[0].LegacyProficiency != "" || l[1].Read || !l[1].Speak {
+		t.Fatalf("languages: %+v", l)
+	}
+	if ed := p.Education[0]; ed.Grade != "8.9 CGPA" || len(ed.Achievements) != 1 {
+		t.Fatalf("education: %+v", ed)
+	}
+}
+
 func TestCarryReviews(t *testing.T) {
-	e := func(title string) Experience { return Experience{Title: title, Type: "Full-time", Start: "2023-01"} }
+	e := func(title string) Experience {
+		return Experience{Type: "Full-time", Start: "2023-01", Roles: []Role{{Title: title, Start: "2023-01"}}}
+	}
 	old := []LinkedExperience{
 		{CompanyID: "a", Entry: e("Designer"), Review: ReviewVerified},
 		{CompanyID: "b", Entry: e("Intern"), Review: ReviewRejected},
@@ -156,21 +207,55 @@ func TestCarryReviews(t *testing.T) {
 			t.Errorf("entry %d: got %s, want %s", i, got[i], want[i])
 		}
 	}
-	// A verified entry edited in place goes back for review.
-	if got := CarryReviews(old[:1], []LinkedExperience{{CompanyID: "a", Entry: e("Senior Designer")}}); got[0] != ReviewPending {
-		t.Fatalf("edited verified entry: %s", got[0])
+	// A verified entry edited in place goes back for review, including an
+	// edit inside a role (an added achievement) or a new role.
+	edited := e("Designer")
+	edited.Roles[0].Achievements = []string{"Shipped v2"}
+	promoted := e("Designer")
+	promoted.Roles = append(promoted.Roles, Role{Title: "Lead", Start: "2024-01", Promoted: true})
+	for _, entry := range []Experience{e("Senior Designer"), edited, promoted} {
+		if got := CarryReviews(old[:1], []LinkedExperience{{CompanyID: "a", Entry: entry}}); got[0] != ReviewPending {
+			t.Errorf("edited verified entry %+v: %s", entry.Roles, got[0])
+		}
+	}
+	// Equal roles (nil vs empty achievements) are unchanged.
+	same := e("Designer")
+	same.Roles[0].Achievements = []string{}
+	if got := CarryReviews(old[:1], []LinkedExperience{{CompanyID: "a", Entry: same}}); got[0] != ReviewVerified {
+		t.Errorf("unchanged entry lost its tick: %s", got[0])
 	}
 }
 
-func TestStarterSlug(t *testing.T) {
-	for name, want := range map[string]string{"Asha Rao": "asha-rao-ab12", "  ": "member-ab12", "Zoë O'Neil": "zo-o-neil-ab12"} {
-		if got := StarterSlug(name, "ab12"); got != want {
-			t.Errorf("StarterSlug(%q) = %q, want %q", name, got, want)
+func TestSlugs(t *testing.T) {
+	for name, want := range map[string]string{"Asha Rao": "asha-rao", "  ": "member", "Zoë O'Neil": "zo-o-neil"} {
+		if got := SlugBase(name); got != want {
+			t.Errorf("SlugBase(%q) = %q, want %q", name, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		base  string
+		taken []string
+		want  string
+	}{
+		{"asha-rao", nil, "asha-rao"},
+		{"asha-rao", []string{"asha-rao"}, "asha-rao-2"},
+		{"asha-rao", []string{"asha-rao", "asha-rao-2", "asha-rao-3"}, "asha-rao-4"},
+		{"al", nil, "al-2"},       // too short on its own
+		{"admin", nil, "admin-2"}, // reserved
+		{"member", []string{"member"}, "member-2"},
+	} {
+		taken := map[string]bool{}
+		for _, s := range tc.taken {
+			taken[s] = true
+		}
+		got := FreeSlug(tc.base, taken)
+		if got != tc.want {
+			t.Errorf("FreeSlug(%q, %v) = %q, want %q", tc.base, tc.taken, got, tc.want)
 		}
 		p := validProfile()
-		p.Slug = StarterSlug(name, "ab12")
+		p.Slug = got
 		if err := p.Normalize(); err != nil {
-			t.Errorf("starter slug %q invalid: %v", p.Slug, err)
+			t.Errorf("generated slug %q invalid: %v", got, err)
 		}
 	}
 }

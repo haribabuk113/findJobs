@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -102,6 +103,15 @@ func (r *RatesRepository) Replace(ctx context.Context, rates reference.Rates) er
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *RatesRepository) UpdatedAt(ctx context.Context) (time.Time, error) {
+	var at *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT MAX(updated_at) FROM exchange_rates`).Scan(&at)
+	if err != nil || at == nil {
+		return time.Time{}, err
+	}
+	return *at, nil
 }
 
 func (r *RatesRepository) All(ctx context.Context) (reference.Rates, error) {

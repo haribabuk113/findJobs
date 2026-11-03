@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	"findJobs/internal/adapters/outbound/storage"
 	appcompanies "findJobs/internal/application/companies"
@@ -34,6 +35,8 @@ func RegisterCompanyRoutes(api *gin.RouterGroup, h *CompanyHandler, optionalUser
 	c.DELETE("/:slug", requireUser, h.Delete)
 	c.PUT("/:slug/logo", requireUser, h.Logo)
 	c.PUT("/:slug/banner", requireUser, h.Banner)
+	c.PUT("/:slug/products/:index/image", requireUser, h.ProductImage)
+	c.DELETE("/:slug/products/:index/image", requireUser, h.ProductImage)
 	c.GET("/:slug/dashboard", requireUser, h.Dashboard)
 	c.GET("/:slug/members", requireUser, h.Members)
 	c.POST("/:slug/members/:user_id/approve", requireUser, h.Approve)
@@ -196,6 +199,48 @@ func (h *CompanyHandler) Logo(ctx *gin.Context) { h.image("logo")(ctx) }
 //	@Failure	400,401,403,404,413,415,500	{object}	adapters.Response
 //	@Router		/api/v1/companies/{slug}/banner [put]
 func (h *CompanyHandler) Banner(ctx *gin.Context) { h.image("banner")(ctx) }
+
+// ProductImage handles PUT (raw image body, ≤1 MB) and DELETE on
+// /companies/:slug/products/:index/image: the image of the product card at
+// index (0-based, as saved). Save the company first so the card exists.
+//
+//	@Summary	Upload or remove a product card's image
+//	@ID			setCompanyProductImage
+//	@Tags		companies
+//	@Accept		image/jpeg,image/png,image/webp
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		slug	path	string	true	"Company slug"
+//	@Param		index	path	int		true	"Product position, from 0"
+//	@Param		body	body	string	false	"Raw image bytes (PUT)"
+//	@Success	200	{object}	adapters.Response{data=domaincompanies.Company}
+//	@Failure	400,401,403,404,413,415,500	{object}	adapters.Response
+//	@Router		/api/v1/companies/{slug}/products/{index}/image [put]
+//	@Router		/api/v1/companies/{slug}/products/{index}/image [delete]
+func (h *CompanyHandler) ProductImage(ctx *gin.Context) {
+	index, err := strconv.Atoi(ctx.Param("index"))
+	if err != nil {
+		fail(ctx, http.StatusNotFound, fmt.Errorf("product not found"))
+		return
+	}
+	var data []byte
+	if ctx.Request.Method == http.MethodPut {
+		if data, err = io.ReadAll(ctx.Request.Body); err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				fail(ctx, http.StatusRequestEntityTooLarge, fmt.Errorf("the image is too large"))
+			} else {
+				fail(ctx, http.StatusBadRequest, fmt.Errorf("could not read the upload"))
+			}
+			return
+		}
+		if data == nil {
+			data = []byte{} // an empty upload is a bad image, not a removal
+		}
+	}
+	company, err := h.service.SetProductImage(ctx, ctx.GetString(userIDKey), ctx.Param("slug"), index, ctx.ContentType(), data)
+	respond(ctx, http.StatusOK, "Product image updated", company, err)
+}
 
 // image handles PUT /companies/:slug/{logo,banner} with the raw image as the body.
 func (h *CompanyHandler) image(kind string) gin.HandlerFunc {

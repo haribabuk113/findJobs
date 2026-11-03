@@ -22,6 +22,8 @@ type MembershipRequester interface {
 type ProfileService interface {
 	// Mine returns the user's profile, or an unsaved starter built from their account.
 	Mine(ctx context.Context, userID string) (*profiles.Profile, error)
+	// SlugAvailable reports whether a valid handle is free for the user (their own counts as free).
+	SlugAvailable(ctx context.Context, userID, slug string) (bool, error)
 	// Save validates and stores the whole profile document.
 	Save(ctx context.Context, userID string, in *profiles.Profile) (*profiles.Profile, error)
 	// Public returns what visitors see at /profiles/{slug}.
