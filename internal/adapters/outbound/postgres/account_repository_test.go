@@ -86,9 +86,12 @@ func TestAccountConsentsAndDeletion(t *testing.T) {
 	}
 	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM wallets WHERE user_id = $1`, user) })
 
-	photo, err := repo.DeleteAccount(ctx, user)
-	if err != nil || photo != "img/leaver.jpg" {
-		t.Fatalf("delete: %q %v", photo, err)
+	if _, err := NewProfileRepository(pool).SetResume(ctx, user, "resume/leaver.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	files, err := repo.DeleteAccount(ctx, user)
+	if err != nil || len(files) != 2 || files[0] != "img/leaver.jpg" || files[1] != "resume/leaver.pdf" {
+		t.Fatalf("delete: %q %v", files, err)
 	}
 	var name, email, iamID, status string
 	if err := pool.QueryRow(ctx, `SELECT name, email, iam_user_id, status FROM users WHERE id = $1`, user).

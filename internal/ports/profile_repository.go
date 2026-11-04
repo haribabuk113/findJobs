@@ -18,6 +18,11 @@ type ExperienceLink struct {
 	Review                  string // profiles.Review*
 }
 
+// ResumeRef is a stored résumé its viewer may read.
+type ResumeRef struct {
+	OwnerID, Slug, Key string
+}
+
 // ProfileRepository persists candidate profiles.
 type ProfileRepository interface {
 	// Get returns the user's profile, or profiles.ErrNotFound.
@@ -35,6 +40,13 @@ type ProfileRepository interface {
 	// SetPhoto stores the photo key ("" removes the photo) and returns the
 	// replaced one ("" if none).
 	SetPhoto(ctx context.Context, userID, key string) (old string, err error)
+	// SetResume stores the résumé key ("" removes it) and returns the replaced one.
+	SetResume(ctx context.Context, userID, key string) (old string, err error)
+	// Resume and ApplicantResume find the résumé behind a profile slug or an
+	// application, when viewerID ("" signed out) may read it; ErrNotFound
+	// otherwise, so a refusal looks the same as no résumé.
+	Resume(ctx context.Context, slug, viewerID string) (ResumeRef, error)
+	ApplicantResume(ctx context.Context, applicationID, viewerID string) (ResumeRef, error)
 	// Experience returns the experience at index with its registered company
 	// (CompanyID "" when the company isn't on Referise) and review state.
 	Experience(ctx context.Context, userID string, index int) (ExperienceLink, error)

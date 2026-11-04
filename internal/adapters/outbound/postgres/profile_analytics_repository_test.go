@@ -30,9 +30,9 @@ func TestProfileAnalytics(t *testing.T) {
 	svc := appprofiles.NewAnalyticsService(repo)
 	// Views: anonymous and another user count; the owner's own view and bots don't.
 	for _, viewer := range []string{"", visitor, owner} {
-		svc.RecordView(ctx, owner, viewer, "", "Mozilla/5.0")
+		svc.RecordView(ctx, owner, viewer, profiles.EventView, "", "Mozilla/5.0")
 	}
-	svc.RecordView(ctx, owner, "", "", "Googlebot/2.1")
+	svc.RecordView(ctx, owner, "", profiles.EventView, "", "Googlebot/2.1")
 	var stored int
 	pool.QueryRow(ctx, `SELECT COALESCE(SUM(count), 0) FROM profile_events WHERE user_id = $1`, owner).Scan(&stored)
 	if stored != 2 {

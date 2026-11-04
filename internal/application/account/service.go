@@ -79,7 +79,7 @@ func (s *service) Gate(ctx context.Context, userID string) error {
 const revokeTimeout = 30 * time.Second
 
 func (s *service) Delete(ctx context.Context, userID string) error {
-	photo, err := s.repo.DeleteAccount(ctx, userID)
+	files, err := s.repo.DeleteAccount(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -89,9 +89,9 @@ func (s *service) Delete(ctx context.Context, userID string) error {
 	// The account is gone; finish the rest even if the client disconnects.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
-	if photo != "" {
-		if err := s.store.Delete(ctx, photo); err != nil {
-			l.Warn().Err(err).Str("key", photo).Msg("could not delete a deleted account's photo")
+	for _, key := range files {
+		if err := s.store.Delete(ctx, key); err != nil {
+			l.Warn().Err(err).Str("key", key).Msg("could not delete a deleted account's file")
 		}
 	}
 	sessions, err := s.sessions.DeleteUserSessions(ctx, userID)

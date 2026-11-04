@@ -12,10 +12,11 @@ import (
 // AnalyticsService is the profile's Activity & Analytics tab: recording
 // views, the daily rollup, and the public numbers.
 type AnalyticsService interface {
-	// RecordView counts one load of the public profile owned by ownerID (best
-	// effort: a failure is logged, never shown to the visitor). The owner's
-	// own views and obvious bots aren't counted.
-	RecordView(ctx context.Context, ownerID, viewerID, src, userAgent string)
+	// RecordView counts one event of kind (profiles.Event*: a profile load, a
+	// résumé view or download) on the profile owned by ownerID (best effort: a
+	// failure is logged, never shown to the visitor). The owner's own views
+	// and obvious bots aren't counted.
+	RecordView(ctx context.Context, ownerID, viewerID, kind, src, userAgent string)
 	// Analytics is the public tab for slug; profiles.ErrNotFound when missing or private.
 	Analytics(ctx context.Context, slug string) (*profiles.Analytics, error)
 	// Rollup is the daily job: rebuild the stats the tab reads.
@@ -33,11 +34,11 @@ func NewAnalyticsService(repo ports.ProfileAnalyticsRepository) AnalyticsService
 	return &analyticsService{repo: repo, now: time.Now}
 }
 
-func (s *analyticsService) RecordView(ctx context.Context, ownerID, viewerID, src, userAgent string) {
+func (s *analyticsService) RecordView(ctx context.Context, ownerID, viewerID, kind, src, userAgent string) {
 	if ownerID == "" || ownerID == viewerID || profiles.IsBot(userAgent) {
 		return
 	}
-	if err := s.repo.RecordEvent(ctx, ownerID, profiles.EventView, profiles.ViewSource(src)); err != nil {
+	if err := s.repo.RecordEvent(ctx, ownerID, kind, profiles.ViewSource(src)); err != nil {
 		l := logger.Get()
 		l.Error().Err(err).Msg("recording a profile view failed")
 	}

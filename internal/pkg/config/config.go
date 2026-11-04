@@ -23,9 +23,12 @@ type Config struct {
 	Session          SessionConfig
 	// FXEndpoint returns exchange rates with INR as the base (open.er-api.com format).
 	FXEndpoint string
-	// StorageDir is where the local-disk ObjectStore keeps uploads.
+	// StorageDir is where the local-disk ObjectStore keeps uploads (when no S3 bucket is set).
 	StorageDir string
-	Razorpay   RazorpayConfig
+	// S3 is an S3-compatible bucket for uploads (Cloudflare R2 and the like);
+	// empty Bucket keeps the local disk.
+	S3       S3Config
+	Razorpay RazorpayConfig
 	// JobPostFeePaise is the paid job-post fee (₹2 by default). It comes from
 	// here for now, not the admin settings; 0 publishes paid posts free.
 	JobPostFeePaise int64
@@ -38,6 +41,12 @@ type Config struct {
 // LegalDocument is one entry of LEGAL_DOCUMENTS.
 type LegalDocument struct {
 	ID, Version string
+}
+
+// S3Config is the uploads bucket. Endpoint, bucket and both keys are set
+// together, or none. R2: endpoint https://<account id>.r2.cloudflarestorage.com, region auto.
+type S3Config struct {
+	Endpoint, Region, Bucket, AccessKeyID, SecretAccessKey string
 }
 
 // RazorpayConfig is the payment gateway account. All three are set together,
@@ -172,6 +181,13 @@ func Load() (*Config, error) {
 		PlatformAdminIDs: getEnvList("PLATFORM_ADMIN_IDS"),
 		FXEndpoint:       l.str("FX_ENDPOINT", "https://open.er-api.com/v6/latest/INR"),
 		StorageDir:       l.str("STORAGE_DIR", "./uploads"),
+		S3: S3Config{
+			Endpoint:        os.Getenv("S3_ENDPOINT"),
+			Region:          l.str("S3_REGION", "auto"),
+			Bucket:          os.Getenv("S3_BUCKET"),
+			AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+		},
 		Razorpay: RazorpayConfig{
 			KeyID:         os.Getenv("RAZORPAY_KEY_ID"),
 			KeySecret:     os.Getenv("RAZORPAY_KEY_SECRET"),
@@ -202,11 +218,24 @@ func (c *Config) validatePool() []error {
 	if rp := c.Razorpay; (rp.KeyID == "") != (rp.KeySecret == "") || (rp.KeyID == "") != (rp.WebhookSecret == "") {
 		errs = append(errs, errors.New("set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET together, or none of them"))
 	}
+	if s := c.S3; !allSetOrNone(s.Endpoint, s.Bucket, s.AccessKeyID, s.SecretAccessKey) {
+		errs = append(errs, errors.New("set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY together, or none of them"))
+	}
 	// The same bound as every admin-set fee (settings.MaxFeePaise).
 	if c.JobPostFeePaise < 0 || c.JobPostFeePaise > 10_000_000 {
 		errs = append(errs, fmt.Errorf("JOB_POST_FEE_PAISE must be 0 to 10000000 (paise), got %d", c.JobPostFeePaise))
 	}
 	return errs
+}
+
+func allSetOrNone(values ...string) bool {
+	set := 0
+	for _, v := range values {
+		if v != "" {
+			set++
+		}
+	}
+	return set == 0 || set == len(values)
 }
 
 // validate checks the environment, and in prod rejects dev-only settings.

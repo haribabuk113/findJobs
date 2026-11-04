@@ -2,6 +2,7 @@ package profiles
 
 import (
 	"context"
+	"path"
 	"slices"
 	"time"
 
@@ -162,16 +163,65 @@ func (s *service) DeletePhoto(ctx context.Context, userID string) (*profiles.Pro
 	return s.repo.Get(ctx, userID)
 }
 
-// deletePhotoFile removes a photo file the profile no longer links to. A
-// failure only leaves an orphan file behind, so it's logged, not returned.
+// deletePhotoFile removes a photo or résumé file the profile no longer links
+// to. A failure only leaves an orphan file behind, so it's logged, not returned.
 func (s *service) deletePhotoFile(ctx context.Context, key string) {
 	if key == "" {
 		return
 	}
 	if err := s.store.Delete(ctx, key); err != nil {
 		l := logger.Get()
-		l.Warn().Err(err).Str("key", key).Msg("could not delete old profile photo")
+		l.Warn().Err(err).Str("key", key).Msg("could not delete an old profile file")
 	}
+}
+
+func (s *service) SetResume(ctx context.Context, userID, contentType string, data []byte) (*profiles.Profile, error) {
+	ext, err := profiles.CheckResume(data, contentType)
+	if err != nil {
+		return nil, &profiles.ValidationError{Field: "resume", Message: err.Error()}
+	}
+	key := "resume/" + uuid.NewString() + "." + ext
+	if err := s.store.Put(ctx, key, contentType, data); err != nil {
+		return nil, err
+	}
+	old, err := s.repo.SetResume(ctx, userID, key)
+	if err != nil {
+		s.store.Delete(context.WithoutCancel(ctx), key) // not linked: don't leave an orphan
+		return nil, err
+	}
+	s.deletePhotoFile(ctx, old)
+	return s.repo.Get(ctx, userID)
+}
+
+func (s *service) DeleteResume(ctx context.Context, userID string) (*profiles.Profile, error) {
+	old, err := s.repo.SetResume(ctx, userID, "")
+	if err != nil {
+		return nil, err
+	}
+	s.deletePhotoFile(ctx, old)
+	return s.repo.Get(ctx, userID)
+}
+
+func (s *service) Resume(ctx context.Context, slug, viewerID string) (*profiles.ResumeFile, error) {
+	ref, err := s.repo.Resume(ctx, slug, viewerID)
+	return s.resumeFile(ctx, ref, err)
+}
+
+func (s *service) ApplicantResume(ctx context.Context, applicationID, viewerID string) (*profiles.ResumeFile, error) {
+	ref, err := s.repo.ApplicantResume(ctx, applicationID, viewerID)
+	return s.resumeFile(ctx, ref, err)
+}
+
+func (s *service) resumeFile(ctx context.Context, ref ports.ResumeRef, err error) (*profiles.ResumeFile, error) {
+	if err != nil {
+		return nil, err
+	}
+	data, contentType, err := s.store.Get(ctx, ref.Key)
+	if err != nil {
+		return nil, err
+	}
+	return &profiles.ResumeFile{OwnerID: ref.OwnerID, FileName: ref.Slug + "-resume" + path.Ext(ref.Key),
+		ContentType: contentType, Data: data}, nil
 }
 
 func (s *service) RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error) {

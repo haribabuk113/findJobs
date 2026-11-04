@@ -40,7 +40,7 @@ import (
 // kind, a 5 MB company banner; handlers enforce each kind's own limit).
 const (
 	maxJSONBody  = 1 << 20
-	maxImageBody = 5 << 20
+	maxUploadBody = 5 << 20 // the largest upload: a banner or a résumé
 )
 
 // InitRoutes wires the app. Background work (rate refreshes, asset publishing)
@@ -76,7 +76,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// Prometheus scrape target. Internal only, like the whole backend: it sits
 	// behind the SvelteKit server, whose proxies never forward /metrics.
 	router.GET("/metrics", metrics.Handler)
-	router.Use(inbound.RequestTimeout(cfg.Server.WriteTimeout), inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxImageBody))
+	router.Use(inbound.RequestTimeout(cfg.Server.WriteTimeout), inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxUploadBody))
 
 	api := router.Group("/api/v1")
 
@@ -93,8 +93,15 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev", cfg.PlatformAdminIDs)
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
-	// Uploads (local disk until the Internxt S3 adapter is configured)
-	store, err := storage.NewLocal(cfg.StorageDir)
+	// Uploads: an S3-compatible bucket (Cloudflare R2) when configured, else local disk.
+	var store ports.ObjectStore
+	if s := cfg.S3; s.Bucket != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		store, err = storage.NewS3(ctx, storage.S3Config(s))
+		cancel()
+	} else {
+		store, err = storage.NewLocal(cfg.StorageDir)
+	}
 	if err != nil {
 		return nil, err
 	}

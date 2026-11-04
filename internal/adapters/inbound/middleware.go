@@ -13,24 +13,26 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// imageTypes are the raw-body upload types. Like JSON, none of them is a
-// CORS "simple" type, so a cross-site page can't send them without a preflight.
-var imageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true}
+// uploadTypes are the raw-body upload types (images and résumés). Like JSON,
+// none of them is a CORS "simple" type, so a cross-site page can't send them
+// without a preflight.
+var uploadTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true,
+	"application/pdf": true, "application/vnd.openxmlformats-officedocument.wordprocessingml.document": true}
 
-// JSONBody rejects request bodies that aren't JSON (or a raw image upload)
+// JSONBody rejects request bodies that aren't JSON (or a raw file upload)
 // and caps their size. An HTML form can't send these types cross-site
 // without a CORS preflight, so this is the backend's CSRF layer behind
 // SameSite=Lax. Bodyless requests (GET, logout) pass; a form post always
 // sends a type.
-func JSONBody(maxBytes, maxImageBytes int64) gin.HandlerFunc {
+func JSONBody(maxBytes, maxUploadBytes int64) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		hasBody := ctx.Request.ContentLength != 0 && ctx.Request.Body != http.NoBody
 		if hasBody || ctx.GetHeader("Content-Type") != "" {
 			limit := maxBytes
 			switch contentType := ctx.ContentType(); {
 			case contentType == "application/json":
-			case imageTypes[contentType]:
-				limit = maxImageBytes // handlers apply the per-image limits
+			case uploadTypes[contentType]:
+				limit = maxUploadBytes // handlers apply the per-file limits
 			default:
 				abort(ctx, http.StatusUnsupportedMediaType, "content type must be application/json")
 				return

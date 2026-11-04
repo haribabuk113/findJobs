@@ -33,6 +33,8 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser
 	me.GET("/slug-availability", h.SlugAvailability)
 	me.PUT("/photo", h.Photo)
 	me.DELETE("/photo", h.DeletePhoto)
+	me.PUT("/resume", h.SetResume)
+	me.DELETE("/resume", h.DeleteResume)
 	me.POST("/experiences/:index/verification", h.RequestVerification)
 	me.GET("/skills", h.Skills)
 	me.POST("/skills", h.AddSkill)
@@ -41,6 +43,8 @@ func RegisterProfileRoutes(api *gin.RouterGroup, h *ProfileHandler, optionalUser
 	// The optional session lets a view by the profile's owner go uncounted.
 	api.GET("/profiles/:slug", optionalUser, h.Public)
 	api.GET("/profiles/:slug/analytics", h.Analytics)
+	api.GET("/profiles/:slug/resume", optionalUser, h.Resume)
+	api.GET("/recruiter/applications/:id/resume", requireUser, h.ApplicantResume)
 }
 
 type skillRequest struct {
@@ -204,6 +208,107 @@ func (h *ProfileHandler) DeletePhoto(ctx *gin.Context) {
 	respond(ctx, http.StatusOK, "Photo removed successfully", p, err)
 }
 
+// SetResume handles PUT /profile/me/resume with a raw PDF or DOCX body (≤5 MB).
+//
+//	@Summary	Upload the résumé
+//	@ID			setMyResume
+//	@Tags		profiles
+//	@Accept		application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Param		body	body	string	true	"Raw PDF or DOCX bytes"
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	400,401,404,413,415,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/resume [put]
+func (h *ProfileHandler) SetResume(ctx *gin.Context) {
+	data, err := io.ReadAll(ctx.Request.Body)
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) || len(data) > domainprofiles.MaxResumeBytes {
+		fail(ctx, http.StatusRequestEntityTooLarge, fmt.Errorf("the résumé must be 5 MB or smaller"))
+		return
+	}
+	if err != nil {
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("could not read the upload"))
+		return
+	}
+	p, err := h.service.SetResume(ctx, ctx.GetString(userIDKey), ctx.ContentType(), data)
+	respond(ctx, http.StatusOK, "Résumé updated successfully", p, err)
+}
+
+// DeleteResume handles DELETE /profile/me/resume. Idempotent.
+//
+//	@Summary	Remove the résumé
+//	@ID			deleteMyResume
+//	@Tags		profiles
+//	@Produce	json
+//	@Security	sessionCookie
+//	@Success	200	{object}	adapters.Response{data=domainprofiles.Profile}
+//	@Failure	401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/profile/me/resume [delete]
+func (h *ProfileHandler) DeleteResume(ctx *gin.Context) {
+	p, err := h.service.DeleteResume(ctx, ctx.GetString(userIDKey))
+	respond(ctx, http.StatusOK, "Résumé removed successfully", p, err)
+}
+
+// Resume handles GET /profiles/:slug/resume?mode=view|download&src=search.
+// Allowed for the owner, for recruiters of a job the candidate applied to,
+// and for anyone when the profile is public and the résumé is Visible to All;
+// 404 otherwise. Each stream counts as a résumé view or download (not the
+// owner's, not bots').
+//
+//	@Summary	Stream a profile's résumé (session optional)
+//	@ID			getProfileResume
+//	@Tags		profiles
+//	@Produce	application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+//	@Param		slug	path	string	true	"Profile slug"
+//	@Param		mode	query	string	false	"view (inline, the default) or download"
+//	@Param		src		query	string	false	"search marks a view from search"
+//	@Success	200	{file}	file
+//	@Failure	404,500	{object}	adapters.Response
+//	@Router		/api/v1/profiles/{slug}/resume [get]
+func (h *ProfileHandler) Resume(ctx *gin.Context) {
+	f, err := h.service.Resume(ctx, ctx.Param("slug"), ctx.GetString(userIDKey))
+	h.streamResume(ctx, f, err)
+}
+
+// ApplicantResume handles GET /recruiter/applications/:id/resume?mode=: the
+// candidate's résumé for the job's recruiter or a current company admin
+// (the "Applied Jobs Only" context). 404 when there is none or not allowed.
+//
+//	@Summary	Stream an applicant's résumé
+//	@ID			getApplicantResume
+//	@Tags		applications
+//	@Produce	application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+//	@Security	sessionCookie
+//	@Param		id		path	string	true	"Application id"
+//	@Param		mode	query	string	false	"view (inline, the default) or download"
+//	@Success	200	{file}	file
+//	@Failure	401,404,500	{object}	adapters.Response
+//	@Router		/api/v1/recruiter/applications/{id}/resume [get]
+func (h *ProfileHandler) ApplicantResume(ctx *gin.Context) {
+	f, err := h.service.ApplicantResume(ctx, ctx.Param("id"), ctx.GetString(userIDKey))
+	h.streamResume(ctx, f, err)
+}
+
+// streamResume writes the résumé, then counts it. DOCX can't show in a
+// browser, so it's always an attachment (and counts as a download).
+func (h *ProfileHandler) streamResume(ctx *gin.Context, f *domainprofiles.ResumeFile, err error) {
+	if err != nil {
+		failErr(ctx, err)
+		return
+	}
+	disposition, kind := "inline", domainprofiles.EventResumeView
+	if ctx.Query("mode") == "download" || f.ContentType != domainprofiles.PDFType {
+		disposition, kind = "attachment", domainprofiles.EventResumeDownload
+	}
+	ctx.Header("Content-Disposition", disposition+`; filename="`+f.FileName+`"`)
+	// Per-viewer access: never cached anywhere. No CSP sandbox: Chrome won't
+	// render a PDF under one; nosniff (JSONBody) keeps the bytes a PDF.
+	ctx.Header("Cache-Control", "private, no-store")
+	ctx.Data(http.StatusOK, f.ContentType, f.Data)
+	h.analytics.RecordView(ctx, f.OwnerID, ctx.GetString(userIDKey), kind, ctx.Query("src"), ctx.GetHeader("User-Agent"))
+}
+
 // RequestVerification handles POST /profile/me/experiences/:index/verification.
 //
 //	@Summary	Ask the experience's company to verify it
@@ -242,7 +347,7 @@ func (h *ProfileHandler) RequestVerification(ctx *gin.Context) {
 func (h *ProfileHandler) Public(ctx *gin.Context) {
 	p, err := h.service.Public(ctx, ctx.Param("slug"))
 	if err == nil {
-		h.analytics.RecordView(ctx, p.OwnerID, ctx.GetString(userIDKey), ctx.Query("src"), ctx.GetHeader("User-Agent"))
+		h.analytics.RecordView(ctx, p.OwnerID, ctx.GetString(userIDKey), domainprofiles.EventView, ctx.Query("src"), ctx.GetHeader("User-Agent"))
 	}
 	respond(ctx, http.StatusOK, "Profile retrieved successfully", p, err)
 }

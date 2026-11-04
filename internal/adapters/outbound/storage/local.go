@@ -16,9 +16,12 @@ import (
 
 // keyPattern is the only key shape stored or served: generated ids, never
 // user-supplied names (system requirements §18), so no path tricks are possible.
-var keyPattern = regexp.MustCompile(`^img/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)$`)
+// img/ holds public images; resume/ is private (only the gated résumé routes read it).
+var keyPattern = regexp.MustCompile(`^(img/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp)|` +
+	`resume/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(pdf|docx))$`)
 
-var contentTypes = map[string]string{".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+var contentTypes = map[string]string{".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+	".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 
 // ErrNotFound is returned for unknown or malformed keys.
 var ErrNotFound = errors.New("file not found")
@@ -30,8 +33,10 @@ type Local struct {
 
 // NewLocal creates the local-disk adapter, creating root if needed.
 func NewLocal(root string) (ports.ObjectStore, error) {
-	if err := os.MkdirAll(filepath.Join(root, "img"), 0o750); err != nil {
-		return nil, fmt.Errorf("storage dir: %w", err)
+	for _, dir := range []string{"img", "resume"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
+			return nil, fmt.Errorf("storage dir: %w", err)
+		}
 	}
 	return &Local{root: root}, nil
 }

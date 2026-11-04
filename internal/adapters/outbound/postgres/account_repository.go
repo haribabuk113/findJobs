@@ -50,20 +50,20 @@ func (r *AccountRepository) RecordConsent(ctx context.Context, userID, docID, ve
 	return err
 }
 
-func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) (string, error) {
+func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([]string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
 	var ecosystemID string
 	err = tx.QueryRow(ctx, `SELECT iam_user_id FROM users WHERE id = $1 AND status <> 'deleted' FOR UPDATE`, userID).Scan(&ecosystemID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", auth.ErrUserNotFound
+		return nil, auth.ErrUserNotFound
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// Manual: the only admin must appoint another admin or delete the company
@@ -73,7 +73,7 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) (s
 		SELECT c.id FROM companies c JOIN company_members m ON m.company_id = c.id
 		WHERE m.user_id = $1 AND m.status = 'current' AND m.role = 'admin' AND c.deleted_at IS NULL
 		ORDER BY c.id FOR UPDATE OF c`, userID); err != nil {
-		return "", err
+		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT c.name FROM companies c JOIN company_members m ON m.company_id = c.id
@@ -82,19 +82,20 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) (s
 				AND o.status = 'current' AND o.role = 'admin')
 		ORDER BY c.name`, userID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	sole, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(sole) > 0 {
-		return "", &account.SoleAdminError{Companies: sole}
+		return nil, &account.SoleAdminError{Companies: sole}
 	}
 
-	var photo *string
-	if err := tx.QueryRow(ctx, `SELECT photo_key FROM profiles WHERE user_id = $1`, userID).Scan(&photo); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return "", err
+	var keys []string
+	if err := tx.QueryRow(ctx, `SELECT array_remove(ARRAY[photo_key, resume_key], NULL) FROM profiles WHERE user_id = $1`,
+		userID).Scan(&keys); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
 	}
 
 	for _, q := range []string{
@@ -118,18 +119,15 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) (s
 			updated_at = NOW() WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, q, userID); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO account_events (user_id, ecosystem_id, kind) VALUES ($1, $2, 'deleted')`,
 		userID, ecosystemID); err != nil {
-		return "", err
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return nil, err
 	}
-	if photo == nil {
-		return "", nil
-	}
-	return *photo, nil
+	return keys, nil
 }

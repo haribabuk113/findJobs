@@ -360,13 +360,14 @@ const canManage = `(j.recruiter_id = $2::uuid OR EXISTS (SELECT 1 FROM company_m
 const applicantColumns = `a.id, a.stage, a.calculated_match_score_pct,
 	ARRAY(SELECT s.name FROM unnest(a.matched_skill_ids) WITH ORDINALITY u(id, o) JOIN skills s ON s.id = u.id ORDER BY u.o),
 	ARRAY(SELECT s.name FROM unnest(a.unmatched_skill_ids) WITH ORDINALITY u(id, o) JOIN skills s ON s.id = u.id ORDER BY u.o),
-	a.submitted_at, a.stage_updated_at, a.dossier`
+	a.submitted_at, a.stage_updated_at, a.dossier,
+	EXISTS (SELECT 1 FROM profiles p WHERE p.user_id = a.user_id AND p.resume_key IS NOT NULL)`
 
 func scanApplicant(row pgx.CollectableRow) (applications.Applicant, error) {
 	var a applications.Applicant
 	var dossier []byte
 	if err := row.Scan(&a.ID, &a.Stage, &a.MatchPct, &a.MatchedSkills, &a.UnmatchedSkills, &a.SubmittedAt,
-		&a.StageUpdatedAt, &dossier); err != nil {
+		&a.StageUpdatedAt, &dossier, &a.HasResume); err != nil {
 		return a, err
 	}
 	return a, json.Unmarshal(dossier, &a.Dossier)

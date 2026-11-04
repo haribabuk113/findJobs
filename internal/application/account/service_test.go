@@ -27,12 +27,12 @@ func (f *fakeRepo) RecordConsent(_ context.Context, _, docID, version, status st
 	f.latest[docID] = account.Consent{DocID: docID, Version: version, Status: status}
 	return nil
 }
-func (f *fakeRepo) DeleteAccount(context.Context, string) (string, error) {
+func (f *fakeRepo) DeleteAccount(context.Context, string) ([]string, error) {
 	if f.err != nil {
-		return "", f.err
+		return nil, f.err
 	}
 	f.deleted = true
-	return "img/me.jpg", nil
+	return []string{"img/me.jpg"}, nil
 }
 
 type fakeSessions struct {

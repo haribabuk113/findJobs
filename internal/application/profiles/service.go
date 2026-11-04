@@ -32,6 +32,15 @@ type ProfileService interface {
 	SetPhoto(ctx context.Context, userID, contentType string, data []byte) (*profiles.Profile, error)
 	// DeletePhoto removes the profile photo and its file; without a photo it changes nothing.
 	DeletePhoto(ctx context.Context, userID string) (*profiles.Profile, error)
+	// SetResume stores a new résumé (PDF/DOCX, checked by its bytes) in private storage.
+	SetResume(ctx context.Context, userID, contentType string, data []byte) (*profiles.Profile, error)
+	// DeleteResume removes the résumé and its file; without one it changes nothing.
+	DeleteResume(ctx context.Context, userID string) (*profiles.Profile, error)
+	// Resume returns the résumé behind slug for viewerID ("" signed out), and
+	// ApplicantResume the one of an application's candidate for its recruiter;
+	// profiles.ErrNotFound when there is none or the viewer may not read it.
+	Resume(ctx context.Context, slug, viewerID string) (*profiles.ResumeFile, error)
+	ApplicantResume(ctx context.Context, applicationID, viewerID string) (*profiles.ResumeFile, error)
 	// RequestVerification asks the linked company to verify experience index.
 	RequestVerification(ctx context.Context, userID string, index int) (*profiles.Profile, error)
 	// Skills returns the user's skill set, without the list when signature

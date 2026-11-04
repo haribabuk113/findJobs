@@ -22,6 +22,7 @@ import (
 type Profile struct {
 	Saved        bool       `json:"saved"`         // read-only: false for a starter profile not yet stored
 	Photo        *string    `json:"photo"`         // read-only: set with PUT /profile/me/photo
+	Resume       *Resume    `json:"resume"`        // read-only: set with PUT /profile/me/resume; null when none (or not public)
 	AboutUpdated *time.Time `json:"about_updated"` // read-only
 	// OwnerID is the profile's user, for server-side checks (e.g. not counting
 	// the owner's own views). Never serialised: ids stay out of the API.
@@ -745,6 +746,9 @@ func (p Profile) Public() Profile {
 	}
 	if p.HourlyRateVisibility != VisibleAll {
 		p.HourlyRate = 0
+	}
+	if p.ResumeVisibility != VisibleAll {
+		p.Resume = nil
 	}
 	p.LastWorkingDate = ""
 	return p

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -34,7 +35,7 @@ const profileColumns = `p.user_id, p.slug, p.name, p.headline, p.location_label,
 	p.open_to_remote, p.relocation, p.travel, p.is_public, p.open_to_work, p.current_salary_visibility,
 	p.expected_salary_visibility, p.hourly_rate_visibility, p.resume_visibility, p.contact_visibility,
 	p.details, p.website, p.work_mode, p.current_company, COALESCE(p.current_location_id, ''),
-	p.current_work_arrangement, p.current_work_type`
+	p.current_work_arrangement, p.current_work_type, p.resume_key, p.resume_uploaded_at`
 
 // locationLabel is the "City, Region, Country" label of the location id in idExpr.
 func locationLabel(idExpr string) string {
@@ -61,7 +62,8 @@ func (r *ProfileRepository) GetPublic(ctx context.Context, slug string) (*profil
 func (r *ProfileRepository) load(ctx context.Context, where string, arg string) (*profiles.Profile, error) {
 	var p profiles.Profile
 	var userID string
-	var photo *string
+	var photo, resume *string
+	var resumeAt *time.Time
 	var details []byte
 	err := r.pool.QueryRow(ctx, `SELECT `+profileColumns+` FROM profiles p `+where, arg).Scan(
 		&userID, &p.Slug, &p.Name, &p.Title, &p.Location, &p.About, &p.AboutUpdated, &photo,
@@ -71,7 +73,7 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 		&p.ExpectedSalaryPeriod, &p.HourlyRate, &p.WorkTypes, &p.PreferredLocations, &p.TargetRoles, &p.OpenToRemote,
 		&p.Relocation, &p.Travel, &p.Visible, &p.Open, &p.CurrentSalaryVisibility, &p.ExpectedSalaryVisibility,
 		&p.HourlyRateVisibility, &p.ResumeVisibility, &p.ContactVisibility, &details, &p.Website, &p.WorkMode,
-		&p.CurrentCompany, &p.CurrentLocationID, &p.CurrentWorkArrangement, &p.CurrentWorkType)
+		&p.CurrentCompany, &p.CurrentLocationID, &p.CurrentWorkArrangement, &p.CurrentWorkType, &resume, &resumeAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, profiles.ErrNotFound
 	}
@@ -82,6 +84,7 @@ func (r *ProfileRepository) load(ctx context.Context, where string, arg string) 
 	p.OwnerID = userID
 	p.IsServingNotice = p.Availability == profiles.ServingNotice
 	p.Photo = companies.FileURL(photo)
+	p.Resume = profiles.NewResume(resume, resumeAt)
 	if err := json.Unmarshal(details, &p.Details); err != nil {
 		return nil, err
 	}
@@ -388,6 +391,56 @@ func (r *ProfileRepository) SetPhoto(ctx context.Context, userID, key string) (s
 		return "", err
 	}
 	return *old, nil
+}
+
+func (r *ProfileRepository) SetResume(ctx context.Context, userID, key string) (string, error) {
+	var old *string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE profiles p SET resume_key = NULLIF($2, ''), resume_uploaded_at = CASE WHEN $2 = '' THEN NULL ELSE NOW() END,
+			updated_at = NOW() FROM profiles prev
+		WHERE p.user_id = $1 AND prev.user_id = p.user_id RETURNING prev.resume_key`, userID, key).Scan(&old)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", profiles.ErrNotFound
+	}
+	if err != nil || old == nil {
+		return "", err
+	}
+	return *old, nil
+}
+
+// mayReadResume is who may read the résumé of profile p ($2 is the viewer, NULL
+// when signed out): the owner; a recruiter or current company admin of a job
+// the candidate applied to on the platform ("Applied Jobs Only", even on a
+// private profile, like the dossier); anyone when the profile is public and
+// the résumé is Visible to All.
+const mayReadResume = `(p.user_id = $2::uuid
+	OR (p.is_public AND p.resume_visibility = 'all')
+	OR EXISTS (SELECT 1 FROM applications a JOIN jobs j ON j.id = a.job_id
+		WHERE a.user_id = p.user_id AND a.apply_type = 'platform' AND a.status <> 'cancelled' AND ` + canManage + `))`
+
+func (r *ProfileRepository) Resume(ctx context.Context, slug, viewerID string) (ports.ResumeRef, error) {
+	return r.resume(ctx, `p.slug = $1`, slug, viewerID)
+}
+
+func (r *ProfileRepository) ApplicantResume(ctx context.Context, applicationID, viewerID string) (ports.ResumeRef, error) {
+	if uuid.Validate(applicationID) != nil {
+		return ports.ResumeRef{}, profiles.ErrNotFound
+	}
+	return r.resume(ctx, `p.user_id = (SELECT user_id FROM applications WHERE id = $1::uuid)`, applicationID, viewerID)
+}
+
+func (r *ProfileRepository) resume(ctx context.Context, where, arg, viewerID string) (ports.ResumeRef, error) {
+	var ref ports.ResumeRef
+	var viewer *string
+	if viewerID != "" {
+		viewer = &viewerID
+	}
+	err := r.pool.QueryRow(ctx, `SELECT p.user_id, p.slug, p.resume_key FROM profiles p
+		WHERE `+where+` AND p.resume_key IS NOT NULL AND `+mayReadResume, arg, viewer).Scan(&ref.OwnerID, &ref.Slug, &ref.Key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ref, profiles.ErrNotFound
+	}
+	return ref, err
 }
 
 func (r *ProfileRepository) Experience(ctx context.Context, userID string, index int) (ports.ExperienceLink, error) {

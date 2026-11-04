@@ -75,6 +75,7 @@ type Applicant struct {
 	SubmittedAt     time.Time  `json:"submitted_at"`
 	StageUpdatedAt  *time.Time `json:"stage_updated_at"`
 	Dossier         Dossier    `json:"dossier"`
+	HasResume bool `json:"has_resume"`
 }
 
 // ApplicantFilter narrows a job's applicant list.

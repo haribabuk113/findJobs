@@ -14,7 +14,7 @@ type AccountRepository interface {
 	RecordConsent(ctx context.Context, userID, docID, version, status string) error
 	// DeleteAccount deletes or anonymises the user's product data in one
 	// transaction, keeping consents, account records and money records (the
-	// ledger is append-only). It returns the profile photo's storage key ("" if
-	// none) so the file can be removed, or *account.SoleAdminError.
-	DeleteAccount(ctx context.Context, userID string) (photoKey string, err error)
+	// ledger is append-only). It returns the profile's file keys (photo,
+	// résumé) so the files can be removed, or *account.SoleAdminError.
+	DeleteAccount(ctx context.Context, userID string) (fileKeys []string, err error)
 }
