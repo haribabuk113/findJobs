@@ -108,11 +108,18 @@ func (h *ReferenceHandler) ListTerms(ctx *gin.Context) {
 		failErr(ctx, err)
 		return
 	}
-	page, err1 := optionalInt(ctx.Query("page"))
-	pageSize, err2 := optionalInt(ctx.Query("page_size"))
-	if err1 != nil || err2 != nil {
-		fail(ctx, http.StatusBadRequest, fmt.Errorf("page and page_size must be whole numbers"))
-		return
+	// Empty query params mean "use defaults": page=1, page_size=50.
+	page := 1
+	if p := ctx.Query("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			page = n
+		}
+	}
+	pageSize := 50
+	if ps := ctx.Query("page_size"); ps != "" {
+		if n, err := strconv.Atoi(ps); err == nil && n > 0 {
+			pageSize = n
+		}
 	}
 	result, err := h.service.ListTerms(ctx, kind, ctx.Query("status"), page, pageSize)
 	respond(ctx, http.StatusOK, "Terms retrieved successfully", result, err)
@@ -227,9 +234,4 @@ func (h *ReferenceHandler) kindAndID(ctx *gin.Context) (domainreference.Kind, in
 	return kind, id, true
 }
 
-func optionalInt(s string) (int, error) {
-	if s == "" {
-		return 0, nil
-	}
-	return strconv.Atoi(s)
-}
+

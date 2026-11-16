@@ -34,6 +34,36 @@ type histogram struct {
 	total  uint64
 }
 
+type histogramSnapshot struct {
+	counts []uint64
+	sum    float64
+	total  uint64
+}
+
+type metricsSnapshot struct {
+	requests map[[3]string]uint64
+	latency  map[string]*histogramSnapshot
+}
+
+// snapshot copies metrics under the lock so the exposition can render without holding it.
+func (m *Metrics) snapshot() metricsSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := metricsSnapshot{
+		requests: map[[3]string]uint64{},
+		latency:  map[string]*histogramSnapshot{},
+	}
+	for k, v := range m.requests {
+		out.requests[k] = v
+	}
+	for r, h := range m.latency {
+		cp := make([]uint64, len(h.counts))
+		copy(cp, h.counts)
+		out.latency[r] = &histogramSnapshot{counts: cp, sum: h.sum, total: h.total}
+	}
+	return out
+}
+
 // NewMetrics creates the collector; pool reports the DB pool's state.
 func NewMetrics(pool func() *pgxpool.Stat) *Metrics {
 	return &Metrics{requests: map[[3]string]uint64{}, latency: map[string]*histogram{}, pool: pool}
@@ -72,24 +102,24 @@ func (m *Metrics) Middleware() gin.HandlerFunc {
 // Handler serves GET /metrics.
 func (m *Metrics) Handler(ctx *gin.Context) {
 	var b strings.Builder
-	m.mu.Lock()
+	snap := m.snapshot()
 	b.WriteString("# HELP http_requests_total HTTP requests by method, route and status.\n# TYPE http_requests_total counter\n")
-	keys := make([][3]string, 0, len(m.requests))
-	for k := range m.requests {
+	keys := make([][3]string, 0, len(snap.requests))
+	for k := range snap.requests {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return strings.Join(keys[i][:], " ") < strings.Join(keys[j][:], " ") })
 	for _, k := range keys {
-		fmt.Fprintf(&b, "http_requests_total{method=%q,route=%q,status=%q} %d\n", k[0], k[1], k[2], m.requests[k])
+		fmt.Fprintf(&b, "http_requests_total{method=%q,route=%q,status=%q} %d\n", k[0], k[1], k[2], snap.requests[k])
 	}
 	b.WriteString("# HELP http_request_duration_seconds Request latency by route.\n# TYPE http_request_duration_seconds histogram\n")
-	routes := make([]string, 0, len(m.latency))
-	for r := range m.latency {
+	routes := make([]string, 0, len(snap.latency))
+	for r := range snap.latency {
 		routes = append(routes, r)
 	}
 	sort.Strings(routes)
 	for _, r := range routes {
-		h := m.latency[r]
+		h := snap.latency[r]
 		var cumulative uint64
 		for i, le := range latencyBuckets {
 			cumulative += h.counts[i]
@@ -98,22 +128,22 @@ func (m *Metrics) Handler(ctx *gin.Context) {
 		fmt.Fprintf(&b, "http_request_duration_seconds_bucket{route=%q,le=\"+Inf\"} %d\n", r, h.total)
 		fmt.Fprintf(&b, "http_request_duration_seconds_sum{route=%q} %g\nhttp_request_duration_seconds_count{route=%q} %d\n", r, h.sum, r, h.total)
 	}
-	m.mu.Unlock()
 
 	if m.pool != nil {
-		s := m.pool()
-		for _, g := range []struct {
-			name, help string
-			value      int64
-		}{
-			{"db_pool_acquired_conns", "Connections in use.", int64(s.AcquiredConns())},
-			{"db_pool_idle_conns", "Idle connections.", int64(s.IdleConns())},
-			{"db_pool_total_conns", "Open connections.", int64(s.TotalConns())},
-			{"db_pool_max_conns", "Pool size limit (DB_MAX_CONNS).", int64(s.MaxConns())},
-		} {
-			fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", g.name, g.help, g.name, g.name, g.value)
+		if s := m.pool(); s != nil {
+			for _, g := range []struct {
+				name, help string
+				value      int64
+			}{
+				{"db_pool_acquired_conns", "Connections in use.", int64(s.AcquiredConns())},
+				{"db_pool_idle_conns", "Idle connections.", int64(s.IdleConns())},
+				{"db_pool_total_conns", "Open connections.", int64(s.TotalConns())},
+				{"db_pool_max_conns", "Pool size limit (DB_MAX_CONNS).", int64(s.MaxConns())},
+			} {
+				fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n%s %d\n", g.name, g.help, g.name, g.name, g.value)
+			}
+			fmt.Fprintf(&b, "# HELP db_pool_empty_acquire_total Acquires that had to wait for a connection.\n# TYPE db_pool_empty_acquire_total counter\ndb_pool_empty_acquire_total %d\n", s.EmptyAcquireCount())
 		}
-		fmt.Fprintf(&b, "# HELP db_pool_empty_acquire_total Acquires that had to wait for a connection.\n# TYPE db_pool_empty_acquire_total counter\ndb_pool_empty_acquire_total %d\n", s.EmptyAcquireCount())
 	}
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)

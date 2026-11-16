@@ -53,10 +53,13 @@ func healthz(ctx *gin.Context) {
 func readyz(pingDB func(context.Context) error) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		ctx.Header("Cache-Control", "no-store")
-		pingCtx, cancel := context.WithTimeout(ctx.Request.Context(), readyTimeout)
+		parent := context.Background()
+		if ctx.Request != nil && ctx.Request.Context() != nil {
+			parent = ctx.Request.Context()
+		}
+		pingCtx, cancel := context.WithTimeout(parent, readyTimeout)
 		defer cancel()
 		if err := pingDB(pingCtx); err != nil {
-			// Never show the DB error to callers (system requirements §20).
 			l := logger.Get()
 			l.Error().Err(err).Msg("readiness check: database ping failed")
 			ctx.JSON(http.StatusServiceUnavailable,

@@ -5,13 +5,21 @@ package background
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"findJobs/internal/pkg/logger"
 )
 
 // Group tracks background goroutines. Stop cancels their context and waits
 // for them, so none is cut off mid-transaction by the pool closing.
 type Group struct {
+	// ctx is the group's lifetime context: built in New from context.Background
+	// and cancelled by Stop. Storing it here is deliberate — every job must
+	// share one context so a single Stop cancels them all. It is app-scoped
+	// (not request-scoped) and its lifetime is the Group's own, so the usual
+	// "never store a context" rule does not apply.
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -30,12 +38,20 @@ func New() *Group {
 func (g *Group) Go(fn func(ctx context.Context)) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.stopped {
 		return false
 	}
+
 	g.wg.Add(1)
 	go func() {
-		defer g.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				l := logger.Get()
+				l.Error().Interface("panic", r).Str("stack", string(debug.Stack())).Msg("background goroutine panicked")
+			}
+			g.wg.Done()
+		}()
 		fn(g.ctx)
 	}()
 	return true

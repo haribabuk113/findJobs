@@ -229,7 +229,7 @@ func (h *ApplicationsHandler) Applicants(ctx *gin.Context) {
 //	@Router		/api/v1/recruiter/applications/{id} [patch]
 func (h *ApplicationsHandler) SetStage(ctx *gin.Context) {
 	if !applicationID.MatchString(ctx.Param("id")) {
-		fail(ctx, http.StatusNotFound, fmt.Errorf("application not found"))
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("invalid application ID format: %s", ctx.Param("id")))
 		return
 	}
 	var in stageRequest
@@ -269,7 +269,7 @@ func (h *ApplicationsHandler) SavedJobs(ctx *gin.Context) {
 //	@Router		/api/v1/saved-jobs/{job_id} [put]
 func (h *ApplicationsHandler) SaveJob(ctx *gin.Context) {
 	if len(ctx.Param("job_id")) > 150 {
-		fail(ctx, http.StatusNotFound, domainapplications.ErrSavedJobUnknown)
+		fail(ctx, http.StatusBadRequest, fmt.Errorf("give a job_id"))
 		return
 	}
 	result, err := h.service.SaveJob(ctx, ctx.GetString(userIDKey), ctx.Param("job_id"))

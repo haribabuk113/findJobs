@@ -42,3 +42,30 @@ func TestGroup(t *testing.T) {
 		t.Fatal("Stop reported done while a job was still running")
 	}
 }
+func TestGroupRecoversPanic(t *testing.T) {
+	g := New()
+	if !g.Go(func(ctx context.Context) {
+		panic("test panic")
+	}) {
+		t.Fatal("Go refused before Stop")
+	}
+	if !g.Stop(time.Second) {
+		t.Fatal("Stop returned false after a panic")
+	}
+	if !g.Stopping() {
+		t.Fatal("not stopping after Stop")
+	}
+	if g.Go(func(context.Context) { t.Error("ran after panic Stop") }) {
+		t.Fatal("Go accepted work after Stop")
+	}
+
+	// A separate group still works normally after a recovered panic.
+	g2 := New()
+	var finished atomic.Bool
+	if !g2.Go(func(ctx context.Context) { finished.Store(true) }) {
+		t.Fatal("Go refused on a new group")
+	}
+	if !g2.Stop(time.Second) || !finished.Load() {
+		t.Fatal("Stop didn't finish the normal job")
+	}
+}

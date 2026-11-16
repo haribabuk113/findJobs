@@ -251,9 +251,14 @@ func (r *ApplicationRepository) ApplyBulk(ctx context.Context, userID string, jo
 			}
 		}
 	}
+	batch := &pgx.Batch{}
 	for _, jobID := range res.External {
-		if _, err := tx.Exec(ctx, `INSERT INTO applications (user_id, job_id, apply_type) VALUES ($1, $2, 'external')`,
-			userID, jobID); err != nil {
+		batch.Queue(`INSERT INTO applications (user_id, job_id, apply_type) VALUES ($1, $2, 'external')`, userID, jobID)
+	}
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for range batch.Len() {
+		if _, err := br.Exec(); err != nil {
 			return nil, alreadyApplied(err)
 		}
 	}
@@ -445,24 +450,38 @@ func (r *ApplicationRepository) SavedJobs(ctx context.Context, userID string) ([
 }
 
 func (r *ApplicationRepository) SaveJob(ctx context.Context, userID, jobID string) error {
-	// ponytail: two parallel saves can both pass the count check and end one past the cap; harmless.
-	tag, err := r.pool.Exec(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Serialize concurrent saves per user so the count check + insert is atomic.
+	// pg_advisory_xact_lock is held until this transaction ends.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO saved_jobs (user_id, job_id)
 		SELECT $1::uuid, $2::varchar WHERE EXISTS (SELECT 1 FROM jobs WHERE id = $2::varchar)
 			AND (SELECT COUNT(*) FROM saved_jobs WHERE user_id = $1) < $3
 		ON CONFLICT DO NOTHING`, userID, jobID, applications.MaxSavedJobs)
-	if err != nil || tag.RowsAffected() == 1 {
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return tx.Commit(ctx)
 	}
 	// Nothing inserted: already saved (fine), no such job, or the list is full.
 	var saved, exists bool
-	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM saved_jobs WHERE user_id = $1 AND job_id = $2),
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM saved_jobs WHERE user_id = $1 AND job_id = $2),
 		EXISTS (SELECT 1 FROM jobs WHERE id = $2)`, userID, jobID).Scan(&saved, &exists); err != nil {
 		return err
 	}
 	switch {
 	case saved:
-		return nil
+		return tx.Commit(ctx)
 	case !exists:
 		return applications.ErrSavedJobUnknown
 	default:

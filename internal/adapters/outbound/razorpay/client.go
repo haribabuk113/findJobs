@@ -20,6 +20,9 @@ import (
 	"findJobs/internal/ports"
 )
 
+// package-level HTTP client for connection reuse
+var client = &http.Client{Timeout: 10 * time.Second}
+
 // Client talks to the Razorpay API with the account's key pair.
 type Client struct {
 	keyID, keySecret, webhookSecret string
@@ -31,7 +34,7 @@ type Client struct {
 // Razorpay dashboard and is separate from the key secret.
 func New(keyID, keySecret, webhookSecret string) ports.PaymentGateway {
 	return &Client{keyID: keyID, keySecret: keySecret, webhookSecret: webhookSecret,
-		baseURL: "https://api.razorpay.com", http: &http.Client{Timeout: 10 * time.Second}}
+		baseURL: "https://api.razorpay.com", http: client}
 }
 
 func (c *Client) KeyID() string { return c.keyID }

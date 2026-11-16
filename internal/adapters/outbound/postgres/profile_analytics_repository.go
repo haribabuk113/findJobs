@@ -89,6 +89,7 @@ func (r *ProfileAnalyticsRepository) Rollup(ctx context.Context, from, today tim
 	defer tx.Rollback(ctx)
 	// Rebuild every day in the range, so a missed or partial run heals itself.
 	// Days are IST dates: $1 and $2 are midnight IST, as timestamps.
+	batch := &pgx.Batch{}
 	for _, q := range []string{
 		`DELETE FROM profile_daily_stats WHERE day >= $1::date AND day < $2::date`,
 		`INSERT INTO profile_daily_stats (user_id, day, views_search, views_direct, resume_views, resume_downloads)
@@ -101,16 +102,27 @@ func (r *ProfileAnalyticsRepository) Rollup(ctx context.Context, from, today tim
 		WHERE at >= ($1::date::timestamp AT TIME ZONE 'Asia/Kolkata') AND at < ($2::date::timestamp AT TIME ZONE 'Asia/Kolkata')
 		GROUP BY 1, 2`,
 	} {
-		if _, err := tx.Exec(ctx, q, isoDate(from), isoDate(today)); err != nil {
+		batch.Queue(q, isoDate(from), isoDate(today))
+	}
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for range batch.Len() {
+		if _, err := br.Exec(); err != nil {
 			return err
 		}
 	}
+	batch = &pgx.Batch{}
 	for _, q := range []string{
 		`DELETE FROM profile_events WHERE at < NOW() - $1::interval`,
 		// A batch id only has to outlive any retry of that batch.
 		`DELETE FROM profile_event_batches WHERE applied_at < NOW() - $1::interval`,
 	} {
-		if _, err := tx.Exec(ctx, q, profileEventsKeep); err != nil {
+		batch.Queue(q, profileEventsKeep)
+	}
+	br = tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for range batch.Len() {
+		if _, err := br.Exec(); err != nil {
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package inbound
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -85,12 +86,18 @@ func (h *PaymentsHandler) walletCSV(ctx *gin.Context, owner domainpayments.Owner
 		failErr(ctx, err)
 		return
 	}
+
+	var buf bytes.Buffer
+	if err := domainpayments.WriteCSV(&buf, w.Entries); err != nil {
+		failErr(ctx, err)
+		return
+	}
 	// The slug is safe in the header: the lookup above matched it to a stored slug.
 	ctx.Header("Cache-Control", "private, no-store")
 	ctx.Header("Content-Type", "text/csv; charset=utf-8")
 	ctx.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="wallet-%s-%s.csv"`, owner.CompanySlug, time.Now().Format("2006-01-02")))
 	ctx.Status(http.StatusOK)
-	if err := domainpayments.WriteCSV(ctx.Writer, w.Entries); err != nil {
+	if _, err := buf.WriteTo(ctx.Writer); err != nil {
 		ctx.Error(err)
 	}
 }

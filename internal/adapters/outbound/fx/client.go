@@ -15,6 +15,9 @@ import (
 	"findJobs/internal/ports"
 )
 
+// package-level HTTP client for connection reuse
+var client = &http.Client{Timeout: 10 * time.Second}
+
 // Client is the FXProvider adapter.
 type Client struct {
 	url  string
@@ -24,7 +27,7 @@ type Client struct {
 // NewClient creates the provider; url returns rates with INR as the base,
 // e.g. https://open.er-api.com/v6/latest/INR.
 func NewClient(url string) ports.FXProvider {
-	return &Client{url: url, http: &http.Client{Timeout: 10 * time.Second}}
+	return &Client{url: url, http: client}
 }
 
 type response struct {

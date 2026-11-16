@@ -21,6 +21,9 @@ import (
 	"findJobs/internal/ports"
 )
 
+// package-level HTTP client for connection reuse
+var client = &http.Client{Timeout: 5 * time.Second}
+
 type Client struct {
 	cfg  config.IAMConfig
 	http *http.Client
@@ -31,7 +34,7 @@ type Client struct {
 
 // NewClient creates the IAM adapter.
 func NewClient(cfg config.IAMConfig) ports.IAMClient {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 5 * time.Second}}
+	return &Client{cfg: cfg, http: client}
 }
 
 func (c *Client) ExchangeCode(ctx context.Context, code string) (*auth.IAMTokens, error) {

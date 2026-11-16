@@ -59,8 +59,9 @@ func main() {
 	if err != nil {
 		// Not fatal: session lookups fall through to Postgres until Redis is back.
 		log.Warn().Err(err).Msg("Redis unavailable at startup; continuing without session cache")
+	} else {
+		defer redis.Close()
 	}
-	defer redis.Close()
 
 	log.Info().Msg("PostgreSQL and Redis connection pools initialized successfully")
 
@@ -81,16 +82,19 @@ func main() {
 	}
 
 	// Graceful shutdown
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
 	go func() {
 		log.Info().Str("addr", server.Addr).Msg("Server starting")
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("Server failed")
+			log.Error().Err(err).Msg("Server failed")
+			// Signal main goroutine to shut down
+			quit <- os.Interrupt
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	log.Info().Msg("Shutting down server...")
@@ -105,14 +109,18 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Error().Err(err).Msg("HTTP server didn't drain in time; open requests were cut off")
 	}
-	if !bg.Stop(time.Until(deadline(ctx))) {
+	var stopTimeout time.Duration
+	if d, ok := ctx.Deadline(); ok {
+		stopTimeout = time.Until(d)
+		if stopTimeout < 0 {
+			stopTimeout = 0
+		}
+	}
+	if !bg.Stop(stopTimeout) {
 		log.Error().Msg("Background work still running at the shutdown deadline")
 	}
 
 	log.Info().Msg("Server stopped gracefully")
 }
 
-func deadline(ctx context.Context) time.Time {
-	d, _ := ctx.Deadline()
-	return d
-}
+

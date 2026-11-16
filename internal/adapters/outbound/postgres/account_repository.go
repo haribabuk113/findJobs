@@ -98,6 +98,7 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([
 		return nil, err
 	}
 
+	batch := &pgx.Batch{}
 	for _, q := range []string{
 		// Product data. The profile takes its skills, experiences and analytics with it.
 		`DELETE FROM profiles WHERE user_id = $1`,
@@ -118,7 +119,12 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([
 		`UPDATE users SET iam_user_id = 'deleted:' || id, email = '', name = 'Deleted user', status = 'deleted',
 			updated_at = NOW() WHERE id = $1`,
 	} {
-		if _, err := tx.Exec(ctx, q, userID); err != nil {
+		batch.Queue(q, userID)
+	}
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for range batch.Len() {
+		if _, err := br.Exec(); err != nil {
 			return nil, err
 		}
 	}

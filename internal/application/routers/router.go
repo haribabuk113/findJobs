@@ -59,7 +59,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// so a panic is logged as that request's 500.
 	router := gin.New()
 	metrics := inbound.NewMetrics(db.Stat)
-	router.Use(inbound.RequestLogger(logger.Get()), metrics.Middleware(), inbound.Recover())
+	router.Use(inbound.RequestLogger(logger.Get()), metrics.Middleware())
 	// Make *gin.Context forward Done/Err/Deadline to the request context, so a
 	// client disconnect or the request deadline cancels the work in progress.
 	router.ContextWithFallback = true
@@ -91,7 +91,9 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	sessions := redisstore.NewSessionCache(postgres.NewSessionStore(db, tokenKeys), rdb)
 	iamClient := iam.NewClient(cfg.IAM)
 	authService := appauth.NewAuthService(authRepo, sessions, iamClient, cfg.Session.IdleTimeout)
-	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev", cfg.PlatformAdminIDs)
+	// Pass trusted proxies so the handler can determine the Secure flag at runtime
+	// by validating X-Forwarded-Proto from trusted proxies.
+	authHandler := inbound.NewAuthHandler(authService, cfg.Environment != "dev", cfg.Server.TrustedProxies, cfg.PlatformAdminIDs)
 	authGroup := api.Group("/auth")
 	inbound.RegisterAuthRoutes(authGroup, authHandler)
 	// Uploads: an S3-compatible bucket (Cloudflare R2) when configured, else local disk.

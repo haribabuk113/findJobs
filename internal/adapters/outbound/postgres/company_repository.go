@@ -214,6 +214,7 @@ func (r *CompanyRepository) Delete(ctx context.Context, slug, userID string) err
 		// Manual: deleting "removes all active job posts, cancels open candidate
 		// applications". Closing (not just hiding) the jobs stops new applications
 		// through direct links. Rejected applications are already decided and stay.
+		batch := &pgx.Batch{}
 		for _, q := range []string{
 			`UPDATE companies SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1`,
 			`UPDATE applications a SET status = 'cancelled', cancelled_at = NOW() FROM jobs j
@@ -221,7 +222,12 @@ func (r *CompanyRepository) Delete(ctx context.Context, slug, userID string) err
 			`UPDATE jobs SET is_visible = FALSE, status = 'closed' WHERE company_id = $1`,
 			`DELETE FROM company_members WHERE company_id = $1`,
 		} {
-			if _, err := tx.Exec(ctx, q, companyID); err != nil {
+			batch.Queue(q, companyID)
+		}
+		br := tx.SendBatch(ctx, batch)
+		defer br.Close()
+		for range batch.Len() {
+			if _, err := br.Exec(); err != nil {
 				return err
 			}
 		}
@@ -485,20 +491,24 @@ func replaceShowcase(ctx context.Context, tx pgx.Tx, companyID string, in *compa
 	if _, err := tx.Exec(ctx, `DELETE FROM company_benefits WHERE company_id = $1`, companyID); err != nil {
 		return nil, err
 	}
+	batch := &pgx.Batch{}
 	for i, p := range in.Products {
 		var image *string
 		if key := companies.FileKey(p.ImageURL); owned[key] {
 			image = &key
 			delete(owned, key) // one card per image
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO company_products (company_id, position, name, about, url, image_key) VALUES ($1, $2, $3, $4, $5, $6)`,
-			companyID, i, p.Name, p.About, p.URL, image); err != nil {
-			return nil, err
-		}
+		batch.Queue(`INSERT INTO company_products (company_id, position, name, about, url, image_key) VALUES ($1, $2, $3, $4, $5, $6)`,
+			companyID, i, p.Name, p.About, p.URL, image)
 	}
 	for i, b := range in.Benefits {
-		if _, err := tx.Exec(ctx, `INSERT INTO company_benefits (company_id, position, title, details, icon) VALUES ($1, $2, $3, $4, $5)`,
-			companyID, i, b.Title, b.Details, b.Icon); err != nil {
+		batch.Queue(`INSERT INTO company_benefits (company_id, position, title, details, icon) VALUES ($1, $2, $3, $4, $5)`,
+			companyID, i, b.Title, b.Details, b.Icon)
+	}
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+	for range batch.Len() {
+		if _, err := br.Exec(); err != nil {
 			return nil, err
 		}
 	}
