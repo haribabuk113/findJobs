@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"findJobs/internal/domain/admin"
 	"findJobs/internal/domain/companies"
 	"findJobs/internal/ports"
 )
@@ -511,4 +512,108 @@ func replaceShowcase(ctx context.Context, tx pgx.Tx, companyID string, in *compa
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// AdminListCompanies searches live companies (unpaginated page filters).
+// AdminListCompanies searches live companies (unpaginated page filters).
+func (r *CompanyRepository) AdminListCompanies(ctx context.Context, query string, page, pageSize int) (*admin.CompanyPage, error) {
+	// Simple implementation: fetch companies where deleted_at IS NULL
+	var totalRows int
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM companies WHERE deleted_at IS NULL`).Scan(&totalRows)
+	if err != nil {
+		return nil, err
+	}
+
+	qquery := `SELECT id, slug, name, tagline, about, website, size, created_at, logo_key, banner_key, hq_country_code FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2`
+	rows, err := r.pool.Query(ctx, qquery, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pageResult := &admin.CompanyPage{Companies: make([]admin.CompanyAdmin, 0, pageSize), Page: page, PageSize: pageSize, Total: totalRows}
+	for rows.Next() {
+		var c admin.CompanyAdmin
+		var logo, banner, countryCode string
+		if err := rows.Scan(&c.ID, &c.Slug, &c.Name, &c.Tagline, &c.About, &c.Website, &c.Size, &c.CreatedAt, &logo, &banner, &countryCode); err != nil {
+			return nil, err
+		}
+		pageResult.Companies = append(pageResult.Companies, admin.CompanyAdmin{
+			ID: c.ID, Slug: c.Slug, Name: c.Name, Tagline: c.Tagline, About: c.About, Website: c.Website, Size: c.Size,
+			CreatedAt: c.CreatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return pageResult, nil
+}
+
+// AdminGetCompany returns the full admin view of one live company.
+func (r *CompanyRepository) AdminGetCompany(ctx context.Context, slug string) (*admin.CompanyAdmin, error) {
+	c := admin.CompanyAdmin{}
+	var logo, banner, countryCode string
+	err := r.pool.QueryRow(ctx, `SELECT c.id, c.slug, c.name, c.tagline, c.about, c.website, c.size, c.created_at,
+		c.logo_key, c.banner_key, c.hq_country_code
+	FROM companies c WHERE c.slug = $1 AND c.deleted_at IS NULL`, slug).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Tagline, &c.About, &c.Website, &c.Size, &c.CreatedAt, &logo, &banner, &countryCode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, &admin.NotFoundError{Message: "company not found"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// AdminPatchCompany applies a partial override (details/branding/wallet/tier).
+func (r *CompanyRepository) AdminPatchCompany(ctx context.Context, slug, adminID string, in *ports.CompanyAdminPatch) (*admin.CompanyAdmin, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Update company fields
+	_, err = tx.Exec(ctx, `UPDATE companies SET name = $1, tagline = $2, about = $3, website = $4, size = $5 WHERE slug = $6`, in.Name, in.Tagline, in.About, in.Website, in.Size, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	// Return updated company
+	return r.AdminGetCompany(ctx, slug)
+}
+
+// AdminDeleteCompany hard-deletes a company (cascade its data).
+func (r *CompanyRepository) AdminDeleteCompany(ctx context.Context, slug, adminID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `DELETE FROM companies WHERE slug = $1`, slug)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// AdminSetMemberDecision changes a member's role or status (bypass sole-admin).
+func (r *CompanyRepository) AdminSetMemberDecision(ctx context.Context, slug, adminID, memberID string, in *ports.MemberAdminDecision) error {
+	now := time.Now()
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Update member record: adjust role and status (bypassing company-admin checks)
+	_, err = tx.Exec(ctx, `UPDATE company_members SET role = $1, status = $2, updated_at = $3 WHERE company_id = (SELECT id FROM companies WHERE slug = $4) AND user_id = $5`, in.Role, in.Status, now, slug, memberID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

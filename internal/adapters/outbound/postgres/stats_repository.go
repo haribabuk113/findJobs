@@ -56,3 +56,17 @@ func (r *StatsRepository) Get(ctx context.Context) (*stats.Platform, error) {
 		&s.CountriesWithUsers, &s.CountriesWithJobsCompanies, &s.ComputedAt)
 	return &s, err
 }
+
+func (r *StatsRepository) PlatformStats(ctx context.Context) (*ports.AdminStats, error) {
+	var a ports.AdminStats
+	err := r.pool.QueryRow(ctx, `
+		SELECT registered_users, hr_professionals, companies, open_jobs,
+			countries_with_users, countries_with_jobs_companies,
+			COALESCE((SELECT COUNT(*) FROM job_reports WHERE created_at >= NOW() - INTERVAL '24 hours'), 0),
+			COALESCE((SELECT COUNT(*) FROM job_reports WHERE status = 'new'), 0),
+			COALESCE((SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '7 days'), 0)`).Scan(
+		&a.RegisteredUsers, &a.HRProfessionals, &a.Companies, &a.OpenJobs,
+		&a.CountriesWithUsers, &a.CountriesWithJobsCompanies,
+		&a.NewReports24h, &a.PendingReports, &a.NewUsers7d)
+	return &a, err
+}

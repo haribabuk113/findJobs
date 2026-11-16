@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"findJobs/internal/domain/admin"
 	"findJobs/internal/domain/companies"
 )
 
@@ -48,6 +49,17 @@ type CompanyRepository interface {
 	RequestMembership(ctx context.Context, companyID, userID, title string, startedOn *time.Time) error
 	// Dashboard returns the admin overview counts (admin only)
 	Dashboard(ctx context.Context, slug, userID string) (*companies.Dashboard, error)
+	// God Mode methods bypass the per-company admin checks (platform admin only):
+	// AdminListCompanies searches live companies (unpaginated page filters).
+	AdminListCompanies(ctx context.Context, query string, page, pageSize int) (*admin.CompanyPage, error)
+	// AdminGetCompany returns the full admin view of one live company.
+	AdminGetCompany(ctx context.Context, slug string) (*admin.CompanyAdmin, error)
+	// AdminPatchCompany applies a partial override (details/branding/wallet/tier).
+	AdminPatchCompany(ctx context.Context, slug, adminID string, in *CompanyAdminPatch) (*admin.CompanyAdmin, error)
+	// AdminDeleteCompany hard-deletes a company (cascade its data).
+	AdminDeleteCompany(ctx context.Context, slug, adminID string) error
+	// AdminSetMemberDecision changes a member's role or status (bypass sole-admin).
+	AdminSetMemberDecision(ctx context.Context, slug, adminID, memberID string, in *MemberAdminDecision) error
 }
 
 // ObjectStore defines the outbound port for uploaded files (local disk in

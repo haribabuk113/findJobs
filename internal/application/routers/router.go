@@ -15,6 +15,7 @@ import (
 	redisstore "findJobs/internal/adapters/outbound/redis"
 	"findJobs/internal/adapters/outbound/storage"
 	appaccount "findJobs/internal/application/account"
+	appadmin "findJobs/internal/application/admin"
 	appauth "findJobs/internal/application/auth"
 	appcompanies "findJobs/internal/application/companies"
 	appjobs "findJobs/internal/application/jobs"
@@ -188,6 +189,16 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// Applications: Easy Apply with the daily free quota, external confirmations, applicant pipeline
 	applicationService := appapplications.NewApplicationService(postgres.NewApplicationRepository(db), settingsRepo)
 	inbound.RegisterApplicationRoutes(api, inbound.NewApplicationsHandler(applicationService), requireUser)
+
+	// God Mode / platform admin: audit, job reports, subscriptions, stats, companies.
+	adminService := appadmin.NewAdminService(
+		postgres.NewAuditRepository(db),
+		postgres.NewJobReportRepository(db),
+		postgres.NewSubscriptionRepository(db),
+		postgres.NewCompanyRepository(db),
+		postgres.NewStatsRepository(db),
+	)
+	inbound.RegisterAdminRoutes(api, inbound.NewAdminHandler(adminService), authHandler.RequirePlatformAdmin())
 	return router, nil
 }
 
