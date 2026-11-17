@@ -137,3 +137,36 @@ func TestVerifyRefetchesOnRotation(t *testing.T) {
 		t.Fatalf("fetches after rotation %d, want 2", fetches.Load())
 	}
 }
+
+// An empty JWKS response (e.g. only RSA keys) must not poison the cache:
+// every subsequent call must refetch, not return "unknown kid" forever.
+func TestVerifyEmptyJWKSRefetches(t *testing.T) {
+	var fetches atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Keys []struct {
+				Kty, Crv, Kid, X string
+			} `json:"keys"`
+		}{Keys: nil})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(config.IAMConfig{Endpoint: srv.URL, Issuer: testIssuer, Audience: testAudience})
+	ctx := context.Background()
+
+	// First call: fetches once, fails with "unknown kid".
+	_, priv := newKey(t)
+	if _, err := c.Verify(ctx, sign(t, jwt.SigningMethodEdDSA, priv, "k1", validClaims())); err == nil {
+		t.Fatal("expected error for empty JWKS, got nil")
+	}
+
+	// Second call: must refetch (fetches == 2), not reuse a poisoned empty cache.
+	if _, err := c.Verify(ctx, sign(t, jwt.SigningMethodEdDSA, priv, "k1", validClaims())); err == nil {
+		t.Fatal("expected error for empty JWKS on refetch, got nil")
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("JWKS fetched %d times for empty response, want 2", got)
+	}
+}

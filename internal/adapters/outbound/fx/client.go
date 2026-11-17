@@ -24,10 +24,24 @@ type Client struct {
 	http *http.Client
 }
 
+// ClientOption configures a Client.
+type ClientOption func(*Client)
+
+// WithHTTPClient overrides the HTTP client used by the adapter.
+// Useful for injecting mock clients in tests or custom timeouts per environment.
+func WithHTTPClient(hc *http.Client) ClientOption {
+	return func(c *Client) { c.http = hc }
+}
+
 // NewClient creates the provider; url returns rates with INR as the base,
 // e.g. https://open.er-api.com/v6/latest/INR.
-func NewClient(url string) ports.FXProvider {
-	return &Client{url: url, http: client}
+// Optional options can override the default HTTP client (see WithHTTPClient).
+func NewClient(url string, opts ...ClientOption) ports.FXProvider {
+	c := &Client{url: url, http: client}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 type response struct {
@@ -47,6 +61,7 @@ func (c *Client) Latest(ctx context.Context) (reference.Rates, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) // ensure connection can be reused
 		return nil, fmt.Errorf("fx provider returned %d", resp.StatusCode)
 	}
 	var body response

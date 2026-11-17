@@ -36,6 +36,30 @@ func testCompanyInput(t *testing.T, slug string) *companies.Input {
 	return in
 }
 
+// TestCreateRejectsEmptyIndustries guards against the panic that used to happen
+// when a caller bypassed Normalize and passed an empty Industries slice. The
+// guard runs before any DB access, so this test does not need a live pool.
+func TestCreateRejectsEmptyIndustries(t *testing.T) {
+	repo := NewCompanyRepository(nil)
+	in := &companies.Input{Name: "Acme", Slug: "acme", Size: "11–50 people",
+		Website: "https://acme.example", HQLocationID: "1277333", Industries: []string{}}
+	_, err := repo.Create(context.Background(), in, "IN", "user")
+	if !companies.IsValidation(err) || err == nil {
+		t.Fatalf("empty industries: want ValidationError, got %v", err)
+	}
+}
+
+// TestUpdateRejectsEmptyIndustries mirrors the Create guard for the Update path.
+func TestUpdateRejectsEmptyIndustries(t *testing.T) {
+	repo := NewCompanyRepository(nil)
+	in := &companies.Input{Name: "Acme", Slug: "acme", Size: "11–50 people",
+		Website: "https://acme.example", HQLocationID: "1277333", Industries: []string{}}
+	_, _, err := repo.Update(context.Background(), "acme", "user", in, "IN")
+	if !companies.IsValidation(err) || err == nil {
+		t.Fatalf("empty industries: want ValidationError, got %v", err)
+	}
+}
+
 func TestCompanyLifecycleAndMemberRules(t *testing.T) {
 	pool := testPool(t)
 	repo := NewCompanyRepository(pool)

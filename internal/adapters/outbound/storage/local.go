@@ -41,7 +41,10 @@ func NewLocal(root string) (ports.ObjectStore, error) {
 	return &Local{root: root}, nil
 }
 
-func (l *Local) Put(_ context.Context, key, _ string, data []byte) error {
+// Put stores data under key. The context parameter is kept for interface
+// conformance (ports.ObjectStore); underlying os calls are blocking and do
+// not accept context, so cancellation is best-effort only.
+func (l *Local) Put(ctx context.Context, key, _ string, data []byte) error {
 	if !keyPattern.MatchString(key) {
 		return fmt.Errorf("invalid storage key %q", key)
 	}
@@ -51,10 +54,17 @@ func (l *Local) Put(_ context.Context, key, _ string, data []byte) error {
 	if err := os.WriteFile(tmp, data, 0o640); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		// Best-effort cleanup of the orphaned temp file.
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
-func (l *Local) Get(_ context.Context, key string) ([]byte, string, error) {
+// Get returns a stored file and its content type. The context parameter is
+// kept for interface conformance; cancellation is best-effort only.
+func (l *Local) Get(ctx context.Context, key string) ([]byte, string, error) {
 	if !keyPattern.MatchString(key) {
 		return nil, "", ErrNotFound
 	}
@@ -65,7 +75,9 @@ func (l *Local) Get(_ context.Context, key string) ([]byte, string, error) {
 	return data, contentTypes[filepath.Ext(key)], err
 }
 
-func (l *Local) Delete(_ context.Context, key string) error {
+// Delete removes a file; a missing key is not an error. The context parameter
+// is kept for interface conformance; cancellation is best-effort only.
+func (l *Local) Delete(ctx context.Context, key string) error {
 	if !keyPattern.MatchString(key) {
 		return nil
 	}

@@ -15,7 +15,7 @@ import (
 // Retention: raw events cover the two periods the analytics compare (plus a
 // day of slack); stats are kept a month for a later longer view.
 const (
-	profileEventsKeep = "15 days"
+	profileEventsKeep = 15
 	profileStatsKeep  = 30
 )
 
@@ -45,15 +45,15 @@ func (r *ProfileAnalyticsRepository) AddEventCounts(ctx context.Context, batchID
 		return err // already applied (a retry after a crash): nothing to do
 	}
 	users, kinds, sources, ats, ns := make([]string, len(counts)), make([]string, len(counts)),
-		make([]string, len(counts)), make([]string, len(counts)), make([]int32, len(counts))
+		make([]string, len(counts)), make([]string, len(counts)), make([]int64, len(counts))
 	for i, c := range counts {
 		// Noon IST on the event's day: any time inside the day rolls up the same.
-		users[i], kinds[i], sources[i], ats[i], ns[i] = c.UserID, c.Kind, c.Source, isoDate(c.Day)+" 12:00:00+05:30", int32(c.Count)
+		users[i], kinds[i], sources[i], ats[i], ns[i] = c.UserID, c.Kind, c.Source, isoDate(c.Day)+" 12:00:00+05:30", int64(c.Count)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO profile_events (user_id, kind, source, at, count)
 		SELECT t.u, t.k, t.s, t.a, t.c
-		FROM unnest($1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::int[]) AS t(u, k, s, a, c)
+		FROM unnest($1::uuid[], $2::text[], $3::text[], $4::timestamptz[], $5::bigint[]) AS t(u, k, s, a, c)
 		WHERE EXISTS (SELECT 1 FROM profiles p WHERE p.user_id = t.u)`, users, kinds, sources, ats, ns); err != nil {
 		return err
 	}
@@ -113,9 +113,9 @@ func (r *ProfileAnalyticsRepository) Rollup(ctx context.Context, from, today tim
 	}
 	batch = &pgx.Batch{}
 	for _, q := range []string{
-		`DELETE FROM profile_events WHERE at < NOW() - $1::interval`,
+		`DELETE FROM profile_events WHERE at < NOW() - make_interval(days => $1)`,
 		// A batch id only has to outlive any retry of that batch.
-		`DELETE FROM profile_event_batches WHERE applied_at < NOW() - $1::interval`,
+		`DELETE FROM profile_event_batches WHERE applied_at < NOW() - make_interval(days => $1)`,
 	} {
 		batch.Queue(q, profileEventsKeep)
 	}

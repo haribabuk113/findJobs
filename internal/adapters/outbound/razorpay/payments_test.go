@@ -19,7 +19,7 @@ func TestCapturedPayments(t *testing.T) {
 		user, pass, _ := r.BasicAuth()
 		q := r.URL.Query()
 		if r.URL.Path != "/v1/payments" || user != "rzp_test_key" || pass != "key-secret" ||
-			q.Get("from") != "1700000000" || q.Get("to") != "1700086399" || q.Get("count") != "100" {
+			q.Get("from") != "1700000000" || q.Get("to") != "1700086400" || q.Get("count") != "100" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

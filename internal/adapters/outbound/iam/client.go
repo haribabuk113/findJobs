@@ -118,15 +118,29 @@ func (c *Client) Verify(ctx context.Context, accessToken string) (*auth.IAMClaim
 
 // key returns the JWKS key for kid, refetching JWKS once when kid is unknown
 // (IAM key rotation publishes the new key before signing with it).
+//
+// The lock is released before the outbound HTTP fetch so that concurrent
+// token verifications are not serialized behind a network call. A double-checked
+// locking pattern is used: after fetching, re-acquire the lock and re-check the
+// cache because another goroutine may have already populated the key.
 func (c *Client) key(ctx context.Context, kid string) (ed25519.PublicKey, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if k, ok := c.keys[kid]; ok {
+		c.mu.Unlock()
 		return k, nil
 	}
+	c.mu.Unlock()
+
 	keys, err := c.fetchJWKS(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Another goroutine may have already populated the key while we fetched.
+	if k, ok := c.keys[kid]; ok {
+		return k, nil
 	}
 	c.keys = keys
 	if k, ok := keys[kid]; ok {
@@ -167,6 +181,11 @@ func (c *Client) fetchJWKS(ctx context.Context) (map[string]ed25519.PublicKey, e
 			continue
 		}
 		keys[k.Kid] = ed25519.PublicKey(x)
+	}
+	if len(keys) == 0 {
+		// Do not cache an empty result: an empty map would be treated as a
+		// poisoned cache for every kid and no refetch would ever happen.
+		return nil, fmt.Errorf("iam: jwks contains no valid Ed25519 keys")
 	}
 	return keys, nil
 }

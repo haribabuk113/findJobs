@@ -51,7 +51,6 @@ func usage(kind reference.Kind) string {
 }
 
 func (r *TaxonomyRepository) List(ctx context.Context, kind reference.Kind, status string, page, pageSize int) (*reference.TermPage, error) {
-	// ponytail: usage is counted per listed row (≤100); add a counter column if this gets slow.
 	from := `FROM ` + table(kind) + ` t
 		WHERE ($1 = '' AND t.status <> 'merged') OR t.status = $1`
 	query := `SELECT t.id, t.name, t.status, t.merged_into, t.created_at, ` + usage(kind) + `, COUNT(*) OVER()

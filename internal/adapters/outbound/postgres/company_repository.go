@@ -43,6 +43,9 @@ func (r *CompanyRepository) LocationCountries(ctx context.Context, ids []string)
 }
 
 func (r *CompanyRepository) Create(ctx context.Context, in *companies.Input, hqCountry, userID string) (*companies.Company, error) {
+	if len(in.Industries) < 1 {
+		return nil, &companies.ValidationError{Field: "industries", Message: "add 1 to 5 industries"}
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -129,9 +132,9 @@ func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCrite
 	const from = `FROM companies
 		WHERE deleted_at IS NULL
 			AND ($1 = '' OR name ILIKE '%' || $1 || '%')
-			AND (cardinality($2::text[]) = 0 OR hq_country_code = ANY($2))
-			AND (cardinality($3::text[]) = 0 OR EXISTS (SELECT 1 FROM unnest(industries) i WHERE lower(i) = ANY($3)))
-			AND (cardinality($4::text[]) = 0 OR size = ANY($4))
+			AND (COALESCE(cardinality($2::text[]), 0) = 0 OR hq_country_code = ANY($2))
+			AND (COALESCE(cardinality($3::text[]), 0) = 0 OR EXISTS (SELECT 1 FROM unnest(industries) i WHERE lower(i) = ANY($3)))
+			AND (COALESCE(cardinality($4::text[]), 0) = 0 OR size = ANY($4))
 			AND (COALESCE(cardinality($5::text[]), 0) = 0 OR hq_location_id = ANY($5) OR branch_location_ids && $5)`
 	filters := []any{escapeLike(c.Query), c.Countries, c.Industries, c.Sizes, c.LocationIDs}
 	rows, err := r.pool.Query(ctx, `
@@ -165,6 +168,9 @@ func (r *CompanyRepository) Search(ctx context.Context, c *companies.SearchCrite
 }
 
 func (r *CompanyRepository) Update(ctx context.Context, slug, userID string, in *companies.Input, hqCountry string) (*companies.Company, []string, error) {
+	if len(in.Industries) < 1 {
+		return nil, nil, &companies.ValidationError{Field: "industries", Message: "add 1 to 5 industries"}
+	}
 	var removed []string
 	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
 		_, err := tx.Exec(ctx, `
@@ -243,7 +249,7 @@ func (r *CompanyRepository) SetImage(ctx context.Context, slug, userID, kind, ke
 	var old *string
 	err := r.asAdmin(ctx, slug, userID, func(tx pgx.Tx, companyID string) error {
 		return tx.QueryRow(ctx, `
-			UPDATE companies c SET `+column+` = $2, updated_at = NOW()
+			UPDATE companies c SET `+column+` = NULLIF($2, ''), updated_at = NOW()
 			FROM (SELECT `+column+` AS old FROM companies WHERE id = $1) prev
 			WHERE c.id = $1 RETURNING prev.old`, companyID, key).Scan(&old)
 	})

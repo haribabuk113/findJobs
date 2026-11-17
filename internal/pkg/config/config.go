@@ -261,6 +261,10 @@ func (c *Config) validate() []error {
 	} else if strings.Contains(c.Session.TokenEncKeys, devTokenKey) {
 		errs = append(errs, errors.New("TOKEN_ENC_KEYS contains the dev key from docker-compose.yml; use a key from the secret manager in prod"))
 	}
+	// In prod, IAM credentials and tokens are sent to the endpoint; require HTTPS.
+	if !strings.HasPrefix(c.IAM.Endpoint, "https://") {
+		errs = append(errs, errors.New("IAM_ENDPOINT must use https:// in prod; credentials must not be sent over cleartext"))
+	}
 	return errs
 }
 

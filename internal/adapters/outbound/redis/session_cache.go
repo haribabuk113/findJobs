@@ -82,7 +82,9 @@ func (c *SessionCache) Lookup(ctx context.Context, sessionID string) (*auth.Sess
 	case !errors.Is(err, goredis.Nil):
 		warn(err, "session cache read failed; using Postgres")
 	}
-	redisDown := err != nil && !errors.Is(err, goredis.Nil)
+	// Only treat connection/refused errors as "Redis down"; timeouts are
+	// transient and the next attempt may succeed.
+	redisDown := err != nil && !errors.Is(err, goredis.Nil) && !errors.Is(err, context.DeadlineExceeded)
 
 	state, err := c.store.Lookup(ctx, sessionID)
 	if err != nil {
@@ -117,15 +119,17 @@ func (c *SessionCache) Touch(ctx context.Context, sessionID string) error {
 // is unreachable, so are cached entries: lookups fall through to the store,
 // which no longer has the session.
 func (c *SessionCache) DeleteSession(ctx context.Context, sessionID string) (string, error) {
+	// Validate first: an invalid ID never touches the store.
+	if uuid.Validate(sessionID) != nil {
+		return "", auth.ErrUnauthorized
+	}
 	refreshToken, err := c.store.DeleteSession(ctx, sessionID)
-	if err != nil || uuid.Validate(sessionID) != nil {
+	if err != nil {
 		return refreshToken, err
 	}
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
-	defer cancel()
-	if err := c.rdb.Set(rctx, cacheKey(sessionID), tombstone, tombstoneTTL).Err(); err != nil {
-		warn(err, "session tombstone write failed")
-	}
+	// Tombstone survives a transient Redis blip: retries cover the failure,
+	// and a missing cache entry is safe (the store has no session).
+	_ = c.writeTombstone(ctx, sessionID)
 	return refreshToken, nil
 }
 
@@ -136,15 +140,38 @@ func (c *SessionCache) DeleteUserSessions(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, err
 	}
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
-	defer cancel()
 	for _, sess := range sessions {
-		if err := c.rdb.Set(rctx, cacheKey(sess.ID), tombstone, tombstoneTTL).Err(); err != nil {
-			warn(err, "session tombstone write failed")
-			break // Redis is down: so are its cached entries
-		}
+		_ = c.writeTombstone(ctx, sess.ID)
 	}
 	return sessions, nil
+}
+
+func (c *SessionCache) writeTombstone(ctx context.Context, sessionID string) error {
+	if uuid.Validate(sessionID) != nil {
+		return auth.ErrUnauthorized
+	}
+	// Retry transient failures up to 2 times with short backoffs.
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
+		defer cancel()
+		if err = c.rdb.Set(rctx, cacheKey(sessionID), tombstone, tombstoneTTL).Err(); err == nil {
+			return nil
+		}
+		// Sleep a bit before the next attempt.
+		if attempt == 0 {
+			select {
+			case <-time.After(10 * time.Millisecond):
+			}
+		} else if attempt == 1 {
+			select {
+			case <-time.After(30 * time.Millisecond):
+			}
+		}
+	}
+	// After exhausted attempts, warn and return last error.
+	warn(err, "session tombstone write failed after retries")
+	return err
 }
 
 func (c *SessionCache) invalidate(ctx context.Context, sessionID string) {
@@ -153,7 +180,7 @@ func (c *SessionCache) invalidate(ctx context.Context, sessionID string) {
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), opTimeout)
 	defer cancel()
-	if err := invalidateScript.Run(rctx, c.rdb, []string{cacheKey(sessionID)}, tombstone).Err(); err != nil && !errors.Is(err, goredis.Nil) {
+	if err := invalidateScript.Run(rctx, c.rdb, []string{cacheKey(sessionID)}, tombstone).Err(); err != nil {
 		warn(err, "session cache invalidate failed")
 	}
 }

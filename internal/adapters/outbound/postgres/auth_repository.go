@@ -64,5 +64,6 @@ func (r *AuthRepository) UserCompanies(ctx context.Context, userID string) ([]au
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[auth.CompanyMembership])
 }

@@ -50,12 +50,19 @@ func (r *AccountRepository) RecordConsent(ctx context.Context, userID, docID, ve
 	return err
 }
 
-func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([]string, error) {
+func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) (keys []string, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	// Rollback is a no-op after a successful Commit (pgx returns ErrTxClosed and
+	// leaves the committed data in place), but surfacing its error here catches
+	// a failed rollback on the error paths instead of silently discarding it.
+	defer func() {
+		if rerr := tx.Rollback(ctx); rerr != nil && !errors.Is(rerr, pgx.ErrTxClosed) && err == nil {
+			err = rerr
+		}
+	}()
 
 	var ecosystemID string
 	err = tx.QueryRow(ctx, `SELECT iam_user_id FROM users WHERE id = $1 AND status <> 'deleted' FOR UPDATE`, userID).Scan(&ecosystemID)
@@ -92,7 +99,6 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([
 		return nil, &account.SoleAdminError{Companies: sole}
 	}
 
-	var keys []string
 	if err := tx.QueryRow(ctx, `SELECT array_remove(ARRAY[photo_key, resume_key], NULL) FROM profiles WHERE user_id = $1`,
 		userID).Scan(&keys); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
@@ -132,7 +138,7 @@ func (r *AccountRepository) DeleteAccount(ctx context.Context, userID string) ([
 		userID, ecosystemID); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return keys, nil

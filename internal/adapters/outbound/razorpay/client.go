@@ -55,7 +55,10 @@ func (c *Client) CreateOrder(ctx context.Context, amountPaise int64, receipt str
 		return "", fmt.Errorf("razorpay order: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxOrderResponseSize))
+	if err != nil {
+		return "", fmt.Errorf("razorpay order read body: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("razorpay order returned %d: %s", resp.StatusCode, raw)
 	}
@@ -112,17 +115,23 @@ func (c *Client) ParseWebhook(body []byte, signature string) (*payments.Paid, er
 // paymentsPage is Razorpay's maximum page size for GET /v1/payments.
 const paymentsPage = 100
 
+// Response body size limits (bytes).
+const maxOrderResponseSize = 64 << 10 // 64 KB
+const maxPaymentsResponseSize = 4 << 20 // 4 MB
+const maxPaymentsPages = 100 // 100 pages per window (~10,000 payments)
+
 // CapturedPayments pages through GET /v1/payments for [from, to) and keeps the
 // captured ones that belong to an order. A refunded or failed payment never
 // counts as paid.
-// ponytail: stops at 100 pages (10,000 payments a window); page by day if volume gets there.
+// Stops at maxPaymentsPages pages (10,000 payments per window); if volume exceeds this,
+// callers should narrow the time window (e.g., page by day).
 func (c *Client) CapturedPayments(ctx context.Context, from, to time.Time) ([]payments.Paid, error) {
 	var paid []payments.Paid
 	for skip := 0; ; skip += paymentsPage {
-		if skip >= 100*paymentsPage {
+		if skip >= maxPaymentsPages*paymentsPage {
 			return nil, fmt.Errorf("razorpay payments: more than %d in the window", skip)
 		}
-		q := url.Values{"from": {strconv.FormatInt(from.Unix(), 10)}, "to": {strconv.FormatInt(to.Unix()-1, 10)},
+		q := url.Values{"from": {strconv.FormatInt(from.Unix(), 10)}, "to": {strconv.FormatInt(to.Unix(), 10)},
 			"count": {strconv.Itoa(paymentsPage)}, "skip": {strconv.Itoa(skip)}}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/payments?"+q.Encode(), nil)
 		if err != nil {
@@ -133,7 +142,10 @@ func (c *Client) CapturedPayments(ctx context.Context, from, to time.Time) ([]pa
 		if err != nil {
 			return nil, fmt.Errorf("razorpay payments: %w", err)
 		}
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxPaymentsResponseSize))
+		if err != nil {
+			return nil, fmt.Errorf("razorpay payments: read body: %w", err)
+		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("razorpay payments returned %d: %s", resp.StatusCode, raw)

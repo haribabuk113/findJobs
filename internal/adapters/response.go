@@ -25,7 +25,10 @@ func validationMessage(err error) error {
 		}
 		return errors.New(strings.Join(parts, "; "))
 	}
-	return fmt.Errorf("invalid request: %w", err)
+	if err != nil {
+		return fmt.Errorf("invalid request: %w", err)
+	}
+	return errors.New("invalid request")
 }
 
 // BuildResponse method is to inject data value to dynamic success response
@@ -35,7 +38,7 @@ func BuildResponse(message string, data any, err any) Response {
 		errmess = err
 	}
 	res := Response{
-		Status:  true,
+		Status:  err == nil,
 		Message: message,
 		Error:   errmess,
 		Data:    data,
