@@ -4,7 +4,7 @@
 -- reject hides it).
 CREATE TABLE job_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id VARCHAR(150) NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     reporter_id UUID REFERENCES users(id) ON DELETE SET NULL,
     reason TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'acknowledged', 'resolved')),

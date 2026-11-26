@@ -75,13 +75,6 @@ func (r *JobReportRepository) Resolve(ctx context.Context, id, moderatorID strin
 		return nil, err
 	}
 
-	// When rejecting, hide the reported job from public listing.
-	if reject {
-		if _, err := r.pool.Exec(ctx, `UPDATE jobs SET is_visible = false WHERE id = $1`, id); err != nil {
-			return nil, err
-		}
-	}
-
 	var rpt admin.JobReport
 	err = r.pool.QueryRow(ctx, `
 		SELECT id, job_id, reporter_id, reason, status, moderation_note, created_at, resolved_at
@@ -89,5 +82,13 @@ func (r *JobReportRepository) Resolve(ctx context.Context, id, moderatorID strin
 	if err != nil {
 		return nil, err
 	}
+
+	// When rejecting, hide the reported job from public listing.
+	if reject {
+		if _, err := r.pool.Exec(ctx, `UPDATE jobs SET is_visible = false WHERE id = $1`, rpt.JobID); err != nil {
+			return nil, err
+		}
+	}
+
 	return &rpt, nil
 }

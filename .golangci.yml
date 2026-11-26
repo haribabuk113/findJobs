@@ -1,0 +1,224 @@
+
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    # Core analysis
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - errcheck
+
+    # Error handling
+    - errorlint
+    - errname
+    - nilerr
+    - nilnil
+    - err113
+
+    # Security and resource management
+    - gosec
+    - bodyclose
+    - contextcheck
+    - noctx
+    - sqlclosecheck
+    - rowserrcheck
+    - durationcheck
+    - makezero
+    - bidichk
+
+    # Concurrency and correctness
+    - copyloopvar
+    - intrange
+    - fatcontext
+    - containedctx
+
+    # Code quality
+    - gocyclo
+    - gocognit
+    - cyclop
+    - funlen
+    - nestif
+    - dupl
+    - goconst
+    - gocritic
+    - revive
+    - unparam
+    - nakedret
+
+    # Go conventions
+    - godot
+    - misspell
+    - predeclared
+    - unconvert
+    - whitespace
+    - nolintlint
+    - godox
+    - goprintffuncname
+    - grouper
+    - importas
+    - usestdlibvars
+    - usetesting
+
+    # API design
+    - interfacebloat
+    - ireturn
+    - tagliatelle
+
+    # Testing
+    - testifylint
+    - thelper
+    - tparallel
+    - testpackage
+    - testableexamples
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    gosec:
+      severity: medium
+      confidence: medium
+
+    gocyclo:
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    cyclop:
+      max-complexity: 15
+      package-average: 10.0
+
+    nestif:
+      min-complexity: 5
+
+    funlen:
+      lines: 100
+      statements: 50
+      ignore-comments: true
+
+    dupl:
+      threshold: 100
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    nakedret:
+      max-func-lines: 30
+
+    godot:
+      scope: declarations
+      period: true
+
+    misspell:
+      locale: US
+
+    interfacebloat:
+      max: 10
+
+    importas:
+      no-unaliased: false
+      no-extra-aliases: true
+
+    testifylint:
+      enable-all: true
+
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
+
+  exclusions:
+    generated: strict
+    warn-unused: true
+    rules:
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - cyclop
+          - dupl
+          - goconst
+          - godox
+          - testpackage
+
+      - path: _test\.go
+        linters:
+          - godot
+
+formatters:
+  enable:
+    - gofumpt
+    - gci
+
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+        clothe-returns: true
+
+    gci:
+      sections:
+        - standard
+        - default
+      custom-order: true
+
+  exclusions:
+    generated: strict
+    warn-unused: true
+    # Exclude all Go test files from linting.
+    paths:
+      - '(^|/)_[^/]+\.go$'
+      - '_test\.go$'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+  whole-files: true
+  fix: false
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+      colors: true
+
+  path-mode: abs
+
+  sort-order:
+    - severity
+    - linter
+    - file
+
+  show-stats: true
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  issues-exit-code: 1
+  tests: true
+  modules-download-mode: readonly
+  go: "1.27"
+
+severity:
+  default: error
