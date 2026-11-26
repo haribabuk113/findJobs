@@ -31,6 +31,7 @@ import (
 	"findJobs/internal/pkg/scheduler"
 	"findJobs/internal/pkg/tokencrypt"
 	"findJobs/internal/ports"
+	"findJobs/internal/telemetry"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,9 +58,11 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	// JSON and breaks log aggregation. RequestLogger replaces it (and records
 	// ctx.Errors, the only place a 500's cause is kept); Recover runs inside it
 	// so a panic is logged as that request's 500.
+	// InitRoutes wires the app.
 	router := gin.New()
-	metrics := inbound.NewMetrics(db.Stat)
-	router.Use(inbound.RequestLogger(logger.Get()), metrics.Middleware())
+	metrics := telemetry.NewMetrics(db.Stat)
+	router.Use(telemetry.RequestLogger(logger.Get()), metrics.Middleware())
+
 	// Make *gin.Context forward Done/Err/Deadline to the request context, so a
 	// client disconnect or the request deadline cancels the work in progress.
 	router.ContextWithFallback = true
@@ -76,7 +79,7 @@ func InitRoutes(cfg *config.Config, db *pgxpool.Pool, rdb *goredis.Client, bg *b
 	inbound.RegisterHealthRoutes(router, db.Ping)
 	// Prometheus scrape target. Internal only, like the whole backend: it sits
 	// behind the SvelteKit server, whose proxies never forward /metrics.
-	router.GET("/metrics", metrics.Handler)
+	router.GET("/metrics", metrics.Handler())
 	router.Use(inbound.RequestTimeout(cfg.Server.WriteTimeout), inbound.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst), inbound.JSONBody(maxJSONBody, maxUploadBody))
 
 	api := router.Group("/api/v1")

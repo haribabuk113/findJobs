@@ -18,8 +18,10 @@ import (
 
 	"findJobs/internal/domain/auth"
 	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
 	"findJobs/internal/pkg/resilience"
 	"findJobs/internal/ports"
+	"findJobs/internal/telemetry"
 )
 
 // package-level HTTP client for connection reuse
@@ -90,7 +92,38 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
+	// Propagate the request ID so IAM logs can be correlated.
+	telemetry.PropagateRequestID(ctx, req)
+	start := time.Now()
+	resp, err := resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
+	duration := time.Since(start)
+	l := logger.Get()
+	if err != nil {
+		l.Error().Err(err).Str("endpoint", path).Dur("duration", duration).Msg("iam call failed")
+	} else if duration > 500*time.Millisecond {
+		l.Warn().Str("endpoint", path).Dur("duration", duration).Msg("slow iam call")
+	} else {
+		// TEST LOGGING - log all successful IAM calls (remove after verification)
+		statusCode := 0
+		if resp != nil {
+			statusCode = resp.StatusCode
+		}
+		l.Info().
+			Str("endpoint", path).
+			Int("status", statusCode).
+			Dur("duration", duration).
+			Msg("iam call succeeded")
+	}
+	m := telemetry.GetMetrics()
+	if m != nil {
+		success := err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 500
+		m.RecordIAMCall(path, success, duration)
+		reqId := telemetry.RequestIDFromContext(ctx)
+		if reqId != "" {
+			l.Info().Str("request_id", reqId).Msg("iam call")
+		}
+	}
+	return resp, err
 }
 
 type claims struct {
@@ -119,11 +152,9 @@ func (c *Client) Verify(ctx context.Context, accessToken string) (*auth.IAMClaim
 
 // key returns the JWKS key for kid, refetching JWKS once when kid is unknown
 // (IAM key rotation publishes the new key before signing with it).
-//
 // The lock is released before the outbound HTTP fetch so that concurrent
-// token verifications are not serialized behind a network call. A double-checked
-// locking pattern is used: after fetching, re-acquire the lock and re-check the
-// cache because another goroutine may have already populated the key.
+// token verifications are not serialized behind a network call; a
+// double-checked locking pattern is used afterwards.
 func (c *Client) key(ctx context.Context, kid string) (ed25519.PublicKey, error) {
 	c.mu.Lock()
 	if k, ok := c.keys[kid]; ok {
@@ -184,8 +215,6 @@ func (c *Client) fetchJWKS(ctx context.Context) (map[string]ed25519.PublicKey, e
 		keys[k.Kid] = ed25519.PublicKey(x)
 	}
 	if len(keys) == 0 {
-		// Do not cache an empty result: an empty map would be treated as a
-		// poisoned cache for every kid and no refetch would ever happen.
 		return nil, fmt.Errorf("iam: jwks contains no valid Ed25519 keys")
 	}
 	return keys, nil

@@ -1,0 +1,9 @@
+# prometheus.yml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'findjobs'
+    # 'app' is the Docker service name from docker-compose.yml
+    static_configs:
+      - targets: ['app:8081']

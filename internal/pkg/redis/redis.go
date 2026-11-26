@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
+	"findJobs/internal/telemetry"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -37,6 +39,9 @@ func New(cfg *config.Config) (*redis.Client, error) {
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		return redisClient, fmt.Errorf("failed to ping redis: %w", err)
 	}
+
+	// Add hook for metrics and logging.
+	client.AddHook(telemetry.NewRedisHook(telemetry.GetMetrics(), logger.Get()))
 
 	return redisClient, nil
 }

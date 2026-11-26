@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/logger"
+	"findJobs/internal/telemetry"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -44,6 +46,9 @@ func New(cfg *config.Config) (*pgxpool.Pool, error) {
 	// Server-side backstop: a slow query or a long lock wait can't hold a
 	// connection past this, even when no request context is cancelled.
 	poolConfig.ConnConfig.RuntimeParams[statementTimeoutParam] = fmt.Sprint(cfg.Database.StatementTimeout.Milliseconds())
+
+	// Record query latency and errors in the shared metrics collector.
+	telemetry.ConfigureTracer(poolConfig, telemetry.GetMetrics(), logger.Get())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
