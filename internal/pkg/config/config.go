@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"findJobs/internal/pkg/resilience"
 )
 
 type Config struct {
@@ -21,6 +23,7 @@ type Config struct {
 	// findJobs /admin routes. Separate from IAM's own admin list.
 	PlatformAdminIDs []string
 	Session          SessionConfig
+	Resilience       resilience.ResilienceConfig
 	// FXEndpoint returns exchange rates with INR as the base (open.er-api.com format).
 	FXEndpoint string
 	// StorageDir is where the local-disk ObjectStore keeps uploads (when no S3 bucket is set).
@@ -198,6 +201,16 @@ func Load() (*Config, error) {
 		Session: SessionConfig{
 			TokenEncKeys: os.Getenv("TOKEN_ENC_KEYS"),
 			IdleTimeout:  l.duration("SESSION_IDLE_TIMEOUT", 168*time.Hour),
+		},
+		Resilience: resilience.ResilienceConfig{
+			CircuitFailureThreshold: l.int("RESILIENCE_CIRCUIT_FAILURE_THRESHOLD", 5),
+			CircuitRecoveryTimeout:  l.duration("RESILIENCE_CIRCUIT_RECOVERY_TIMEOUT", 30*time.Second),
+			CircuitSuccessThreshold: l.int("RESILIENCE_CIRCUIT_SUCCESS_THRESHOLD", 3),
+			RetryMaxRetries:         l.int("RESILIENCE_RETRY_MAX_RETRIES", 3),
+			RetryBackoffBase:        l.duration("RESILIENCE_RETRY_BACKOFF_BASE", 100*time.Millisecond),
+			RetryBackoffMax:         l.duration("RESILIENCE_RETRY_BACKOFF_MAX", 5*time.Second),
+			RetryJitterPercentage:   l.int("RESILIENCE_RETRY_JITTER_PERCENTAGE", 15),
+			RetryTimeout:            l.duration("RESILIENCE_RETRY_TIMEOUT", 30*time.Second),
 		},
 	}
 	if err := errors.Join(append(append(l.errs, cfg.validatePool()...), cfg.validate()...)...); err != nil {

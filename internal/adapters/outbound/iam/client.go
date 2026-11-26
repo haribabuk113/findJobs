@@ -18,6 +18,7 @@ import (
 
 	"findJobs/internal/domain/auth"
 	"findJobs/internal/pkg/config"
+	"findJobs/internal/pkg/resilience"
 	"findJobs/internal/ports"
 )
 
@@ -89,7 +90,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.http.Do(req)
+	return resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
 }
 
 type claims struct {
@@ -154,7 +155,7 @@ func (c *Client) fetchJWKS(ctx context.Context) (map[string]ed25519.PublicKey, e
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
 	if err != nil {
 		return nil, err
 	}

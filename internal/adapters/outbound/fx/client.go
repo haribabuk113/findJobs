@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"findJobs/internal/domain/reference"
+	"findJobs/internal/pkg/resilience"
 	"findJobs/internal/ports"
 )
 
@@ -55,7 +56,7 @@ func (c *Client) Latest(ctx context.Context) (reference.Rates, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
 	if err != nil {
 		return nil, fmt.Errorf("fx request: %w", err)
 	}

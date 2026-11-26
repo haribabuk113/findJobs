@@ -16,6 +16,7 @@ import (
 	"findJobs/internal/pkg/logger"
 	postgrefacade "findJobs/internal/pkg/postgres"
 	"findJobs/internal/pkg/redis"
+	"findJobs/internal/pkg/resilience"
 	"findJobs/migrations"
 )
 
@@ -43,6 +44,9 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load configuration")
 	}
+
+	// Configure shared resilience defaults (circuit breakers + retries) from env
+	resilience.SetDefaultConfig(cfg.Resilience)
 
 	// Initialize PostgreSQL connection pool
 	db, err := postgrefacade.New(cfg)

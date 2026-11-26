@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"findJobs/internal/domain/payments"
+	"findJobs/internal/pkg/resilience"
 	"findJobs/internal/ports"
 )
 
@@ -50,7 +51,7 @@ func (c *Client) CreateOrder(ctx context.Context, amountPaise int64, receipt str
 	}
 	req.SetBasicAuth(c.keyID, c.keySecret)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
 	if err != nil {
 		return "", fmt.Errorf("razorpay order: %w", err)
 	}
@@ -138,7 +139,7 @@ func (c *Client) CapturedPayments(ctx context.Context, from, to time.Time) ([]pa
 			return nil, err
 		}
 		req.SetBasicAuth(c.keyID, c.keySecret)
-		resp, err := c.http.Do(req)
+		resp, err := resilience.Do(ctx, c.http, req, resilience.WithCircuitBreaker(), resilience.WithRetryConfig())
 		if err != nil {
 			return nil, fmt.Errorf("razorpay payments: %w", err)
 		}
